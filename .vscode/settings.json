@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cat /mnt/c/Users/jelle/AppData/Roaming/Code/User/settings\\.json 2>/dev/null \\| python3 -c \"import sys,json; d=json\\.load\\(sys\\.stdin\\); mcp=d\\.get\\('mcp',d\\.get\\('github\\.copilot\\.chat\\.mcp',\\{\\}\\)\\); print\\(json\\.dumps\\(mcp, indent=2\\)\\)\" 2>/dev/null \\|\\| echo \"not found\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ls ~/\\.ssh/id_\\* 2>/dev/null \\|\\| echo \"no keys\"; ssh-keygen -t ed25519 -f ~/\\.ssh/id_ed25519 -N \"\" -q 2>/dev/null && echo \"key created\" \\|\\| echo \"key exists\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

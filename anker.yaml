@@ -1,0 +1,32 @@
+esphome:
+  name: anker
+  friendly_name: anker
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "GPNYZnRHb2rycMqSclXA/oXMHiP+IufX82wFL+Al3DA="
+
+ota:
+  - platform: esphome
+    password: "21294c43dd21c78f841a9b55749379f4"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Anker Fallback Hotspot"
+    password: "WBCdotOJ4lsN"
+
+captive_portal:
+    

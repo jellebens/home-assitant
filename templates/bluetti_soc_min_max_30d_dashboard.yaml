@@ -1,0 +1,29 @@
+title: SOC Daily Min Max (30 Days)
+views:
+  - title: SOC Daily Min Max
+    path: soc-daily-min-max
+    icon: mdi:battery-clock
+    panel: true
+    cards:
+      - type: vertical-stack
+        cards:
+          - type: statistics-graph
+            title: Battery SOC Daily Min and Max (Last 30 Days)
+            days_to_show: 30
+            period: day
+            chart_type: line
+            stat_types:
+              - min
+              - max
+            entities:
+              - sensor.apex300_battery_soc
+
+          - type: statistics-graph
+            title: Net Power Delta (Last 30 Days)
+            days_to_show: 30
+            period: day
+            chart_type: line
+            stat_types:
+              - mean
+            entities:
+              - sensor.buzzbrick_net_power_delta

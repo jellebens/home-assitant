@@ -1,0 +1,176 @@
+# Home Assistant package for Buzzbrick battery economics.
+#
+# Wired to these entities:
+# - sensor.buzzbrick_ap3002532000565690_grid_input_power
+# - sensor.buzzbrick_ap3002532000565690_alternating_current_out_power
+# - sensor.current_electricity_market_price
+#
+# Notes:
+# - The charge power sensor should represent only grid charging power in watts.
+#   If you use total battery input power and some of that comes from solar, the
+#   charging cost will be overstated.
+# - The discharge power sensor should represent battery power that offsets house
+#   import in watts.
+
+template:
+  - sensor:
+      - name: Buzzbrick Charge Cost Rate
+        unique_id: buzzbrick_charge_cost_rate
+        unit_of_measurement: EUR/h
+        state_class: measurement
+        availability: >
+          {{
+            states('sensor.buzzbrick_ap3002532000565690_grid_input_power') not in ['unknown', 'unavailable']
+            and states('sensor.current_electricity_market_price') not in ['unknown', 'unavailable']
+          }}
+        state: >
+          {% set power_w = states('sensor.buzzbrick_ap3002532000565690_grid_input_power') | float(0) %}
+          {% set price = states('sensor.current_electricity_market_price') | float(0) %}
+          {{ ((power_w / 1000) * price) | round(4) }}
+
+      - name: Buzzbrick Discharge Savings Rate
+        unique_id: buzzbrick_discharge_savings_rate
+        unit_of_measurement: EUR/h
+        state_class: measurement
+        availability: >
+          {{
+            states('sensor.buzzbrick_ap3002532000565690_alternating_current_out_power') not in ['unknown', 'unavailable']
+            and states('sensor.current_electricity_market_price') not in ['unknown', 'unavailable']
+          }}
+        state: >
+          {% set power_w = states('sensor.buzzbrick_ap3002532000565690_alternating_current_out_power') | float(0) %}
+          {% set price = states('sensor.current_electricity_market_price') | float(0) %}
+          {{ ((power_w / 1000) * price) | round(4) }}
+
+      - name: Buzzbrick Net Savings Total
+        unique_id: buzzbrick_net_savings_total
+        unit_of_measurement: EUR
+        device_class: monetary
+        state_class: total
+        availability: >
+          {{
+            states('sensor.buzzbrick_discharge_savings_total') not in ['unknown', 'unavailable']
+            and states('sensor.buzzbrick_charge_cost_total') not in ['unknown', 'unavailable']
+          }}
+        state: >
+          {% set savings = states('sensor.buzzbrick_discharge_savings_total') | float(0) %}
+          {% set cost = states('sensor.buzzbrick_charge_cost_total') | float(0) %}
+          {{ (savings - cost) | round(2) }}
+
+      - name: Buzzbrick Net Savings Today
+        unique_id: buzzbrick_net_savings_today
+        unit_of_measurement: EUR
+        device_class: monetary
+        state_class: measurement
+        availability: >
+          {{
+            states('sensor.buzzbrick_discharge_savings_today') not in ['unknown', 'unavailable']
+            and states('sensor.buzzbrick_charge_cost_today') not in ['unknown', 'unavailable']
+          }}
+        state: >
+          {% set savings = states('sensor.buzzbrick_discharge_savings_today') | float(0) %}
+          {% set cost = states('sensor.buzzbrick_charge_cost_today') | float(0) %}
+          {{ (savings - cost) | round(2) }}
+
+      - name: Buzzbrick Net Savings This Month
+        unique_id: buzzbrick_net_savings_this_month
+        unit_of_measurement: EUR
+        device_class: monetary
+        state_class: measurement
+        availability: >
+          {{
+            states('sensor.buzzbrick_discharge_savings_this_month') not in ['unknown', 'unavailable']
+            and states('sensor.buzzbrick_charge_cost_this_month') not in ['unknown', 'unavailable']
+          }}
+        state: >
+          {% set savings = states('sensor.buzzbrick_discharge_savings_this_month') | float(0) %}
+          {% set cost = states('sensor.buzzbrick_charge_cost_this_month') | float(0) %}
+          {{ (savings - cost) | round(2) }}
+
+      - name: Buzzbrick Net Power Delta
+        unique_id: buzzbrick_net_power_delta
+        unit_of_measurement: kW
+        state_class: measurement
+        availability: >
+          {{
+            states('sensor.buzzbrick_ap3002532000565690_grid_input_power') not in ['unknown', 'unavailable']
+            and states('sensor.buzzbrick_ap3002532000565690_alternating_current_out_power') not in ['unknown', 'unavailable']
+          }}
+        state: >
+          {% set grid_in = states('sensor.buzzbrick_ap3002532000565690_grid_input_power') | float(0) %}
+          {% set ac_out = states('sensor.buzzbrick_ap3002532000565690_alternating_current_out_power') | float(0) %}
+          {{ ((grid_in - ac_out) / 1000) | round(2) }}
+
+  - binary_sensor:
+      - name: Buzzbrick Mode Charging
+        unique_id: buzzbrick_mode_charging
+        availability: >
+          {{ states('select.apex300_working_mode') not in ['unknown', 'unavailable'] }}
+        state: >
+          {{ states('select.apex300_working_mode') == 'CHARGING' }}
+
+      - name: Buzzbrick Mode Passthrough
+        unique_id: buzzbrick_mode_passthrough
+        availability: >
+          {{ states('select.apex300_working_mode') not in ['unknown', 'unavailable'] }}
+        state: >
+          {{ states('select.apex300_working_mode') == 'PASSTHROUGH' }}
+
+      - name: Buzzbrick Mode Discharging
+        unique_id: buzzbrick_mode_discharging
+        availability: >
+          {{ states('select.apex300_working_mode') not in ['unknown', 'unavailable'] }}
+        state: >
+          {{ states('select.apex300_working_mode') == 'DISCHARGING' }}
+
+sensor:
+  - platform: integration
+    source: sensor.buzzbrick_ap3002532000565690_grid_input_power
+    name: Buzzbrick Charge Energy
+    unique_id: buzzbrick_charge_energy
+    method: trapezoidal
+    round: 3
+    unit_time: h
+    unit_prefix: k
+
+  - platform: integration
+    source: sensor.buzzbrick_ap3002532000565690_alternating_current_out_power
+    name: Buzzbrick Discharge Energy
+    unique_id: buzzbrick_discharge_energy
+    method: trapezoidal
+    round: 3
+    unit_time: h
+    unit_prefix: k
+
+  - platform: integration
+    source: sensor.buzzbrick_charge_cost_rate
+    name: Buzzbrick Charge Cost Total
+    unique_id: buzzbrick_charge_cost_total
+    method: trapezoidal
+    round: 2
+    unit_time: h
+
+  - platform: integration
+    source: sensor.buzzbrick_discharge_savings_rate
+    name: Buzzbrick Discharge Savings Total
+    unique_id: buzzbrick_discharge_savings_total
+    method: trapezoidal
+    round: 2
+    unit_time: h
+
+utility_meter:
+  buzzbrick_charge_cost_today:
+    source: sensor.buzzbrick_charge_cost_total
+    cycle: daily
+
+  buzzbrick_discharge_savings_today:
+    source: sensor.buzzbrick_discharge_savings_total
+    cycle: daily
+
+  buzzbrick_charge_cost_this_month:
+    source: sensor.buzzbrick_charge_cost_total
+    cycle: monthly
+
+  buzzbrick_discharge_savings_this_month:
+    source: sensor.buzzbrick_discharge_savings_total
+    cycle: monthly
