@@ -1,0 +1,98 @@
+# Zeus configuration.
+# Copy to config.yaml and fill in. Environment variables of the form ${VAR}
+# are expanded at load time, so secrets can be kept out of the file.
+
+home_assistant:
+  base_url: "http://vesta.local:8123"
+  token: "${HA_TOKEN}" # long-lived access token
+  verify_ssl: true
+
+mqtt:
+  host: "vesta.local"
+  port: 1883
+  username: "${MQTT_USER}"
+  password: "${MQTT_PASS}"
+  discovery_prefix: "homeassistant" # HA MQTT discovery prefix
+  base_topic: "zeus"
+
+# Battery physical + operating limits. These are the single most important
+# numbers to get right -- the optimizer respects them as hard constraints.
+# Defaults below are for a Bluetti Apex 300 + 2x B500K expansions.
+battery:
+  # Total nameplate capacity (0-100% of the SoC sensor). soc_min/max below carve
+  # out the actually-cycled range. Apex 300 (2.7648 kWh) + 2x B500K (5.12 kWh).
+  usable_capacity_kwh: 13.0
+  max_charge_kw: 3.84 # Apex 300 AC charge input (needs the fast-charge cable; lower without)
+  max_discharge_kw: 3.84 # Apex 300 AC output rating
+  soc_min_pct: 10 # never discharge below this (LiFePO4 floor; raise for more reserve)
+  soc_max_pct: 100 # never charge above this
+  charge_efficiency: 0.95 # one-way (grid -> stored); ~0.90 round-trip for LiFePO4
+  discharge_efficiency: 0.95 # one-way (stored -> load)
+
+# Home Assistant entity IDs. See templates/bluetti_battery_setup.md for the
+# canonical Buzzbrick entity names.
+entities:
+  soc: "sensor.buzzbrick_ap3002532000565690_total_battery_percent"
+  grid_input_power: "sensor.buzzbrick_ap3002532000565690_grid_input_power"
+  ac_output_power: "sensor.buzzbrick_ap3002532000565690_alternating_current_out_power"
+  house_load_power: "sensor.house_load_power" # whole-home consumption (W)
+  solar_power: null # set to a PV power sensor (W) if you have solar, else null
+  current_price: "sensor.current_electricity_market_price" # EUR/kWh now
+
+# Control surface used in Phase 3. Leave control.enabled false until you have
+# confirmed the working-mode options below and tested in dry-run.
+# The Apex 300 is controlled via its "Working Mode" select entity, so the
+# optimizer's per-slot intent (charge / discharge / idle) is mapped to a mode.
+control:
+  enabled: false
+  mode: "working_mode" # "working_mode" (select) or "ha_service" (number setpoints)
+  working_mode:
+    entity: "select.apex_300_working_mode" # confirm exact entity_id via discovery
+    # EXACT option labels the select exposes (see DISCOVERY.md):
+    charge_option: "" # mode that force-charges from the grid
+    discharge_option: "" # mode that discharges / runs self-powered
+    idle_option: "" # mode that holds charge (standby)
+    intent_threshold_kw: 0.1 # ignore tiny charge/discharge as "idle"
+  # Only used when mode: "ha_service".
+  set_charge_service: "number/set_value"
+  set_charge_entity: ""
+  set_discharge_service: "number/set_value"
+  set_discharge_entity: ""
+
+prices:
+  # Where future hourly prices come from.
+  #   ha_forecast: read a forecast attribute off an HA price sensor
+  #   entsoe:      query the ENTSO-E transparency API directly
+  source: "ha_forecast"
+  ha_forecast:
+    entity: "sensor.current_electricity_market_price"
+    forecast_attribute: "forecast" # attribute holding the list of future prices
+  entsoe:
+    api_token: "${ENTSOE_TOKEN}"
+    area_code: "10YBE----------2" # Belgium; change for your bidding zone
+  # Per-kWh adders applied on top of the raw market price to approximate the
+  # all-in import tariff (network fees, taxes, supplier margin). EUR/kWh.
+  import_markup: 0.10
+  # What exported energy is worth (EUR/kWh). 0 disables export crediting.
+  export_price: 0.0
+
+optimizer:
+  horizon_hours: 36
+  slot_minutes: 60
+  # Small penalty (EUR/kWh throughput) to discourage pointless cycling.
+  cycle_penalty: 0.002
+  # If null, terminal energy left in the battery is valued at the horizon's
+  # mean import price (prevents end-of-horizon draining).
+  terminal_value_price: null
+
+forecast:
+  model: "baseline" # "baseline" (hour-of-week median) or "lightgbm"
+  history_days: 30 # how much past load history to train on
+
+reporting:
+  timezone: "Europe/Brussels"
+  output_dir: "reports"
+
+run:
+  interval_minutes: 60 # how often to re-forecast / re-optimize
+  dry_run: true # true = compute + report only, never actuate

@@ -1,0 +1,111 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/jellebens/zeus
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Extra args appended to the entrypoint (which already passes --config
+# /config/config.yaml). The default empty list runs the continuous loop.
+args: []
+
+# Rendered verbatim into /config/config.yaml. Keep secrets as ${ENV} references
+# here; the actual values are injected from the Secret below so they never live
+# in this (git-committed) values file. Mirrors config.example.yaml.
+config:
+  home_assistant:
+    base_url: "http://vesta.local:8123"
+    token: "${HA_TOKEN}"
+    verify_ssl: true
+  mqtt:
+    host: vesta.local
+    port: 1883
+    username: "${MQTT_USER}"
+    password: "${MQTT_PASS}"
+    discovery_prefix: homeassistant
+    base_topic: zeus
+  battery:
+    usable_capacity_kwh: 13.0 # Apex 300 + 2x B500K
+    max_charge_kw: 3.84
+    max_discharge_kw: 3.84
+    soc_min_pct: 10
+    soc_max_pct: 100
+    charge_efficiency: 0.95
+    discharge_efficiency: 0.95
+  entities:
+    soc: sensor.buzzbrick_ap3002532000565690_total_battery_percent
+    grid_input_power: sensor.buzzbrick_ap3002532000565690_grid_input_power
+    ac_output_power: sensor.buzzbrick_ap3002532000565690_alternating_current_out_power
+    house_load_power: sensor.house_load_power
+    solar_power: null
+    current_price: sensor.current_electricity_market_price
+  control:
+    enabled: false
+    mode: working_mode
+    working_mode:
+      entity: select.apex_300_working_mode
+      charge_option: ""
+      discharge_option: ""
+      idle_option: ""
+      intent_threshold_kw: 0.1
+  prices:
+    source: ha_forecast
+    ha_forecast:
+      entity: sensor.current_electricity_market_price
+      forecast_attribute: forecast
+    entsoe:
+      api_token: "${ENTSOE_TOKEN}"
+      area_code: "10YBE----------2"
+    import_markup: 0.10
+    export_price: 0.0
+  optimizer:
+    horizon_hours: 36
+    slot_minutes: 60
+    cycle_penalty: 0.002
+    terminal_value_price: null
+  forecast:
+    model: baseline
+    history_days: 30
+  reporting:
+    timezone: Europe/Brussels
+    output_dir: /app/reports
+  run:
+    interval_minutes: 60
+    dry_run: true
+
+# Secret holding HA_TOKEN / MQTT_USER / MQTT_PASS / ENTSOE_TOKEN.
+# In a GitOps repo, prefer create=false and reference a SealedSecret/SOPS-managed
+# Secret via existingSecret instead of committing plaintext here.
+secret:
+  create: false
+  existingSecret: "" # defaults to "<release>-zeus-secrets"
+  data:
+    HA_TOKEN: ""
+    MQTT_USER: ""
+    MQTT_PASS: ""
+    ENTSOE_TOKEN: ""
+
+# Persist generated savings reports across restarts.
+persistence:
+  enabled: false
+  size: 1Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]

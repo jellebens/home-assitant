@@ -1,0 +1,40 @@
+# Example Argo CD Application for zeus.
+# Adjust repoURL/path/targetRevision to where you vendor the chart, and set the
+# destination namespace. Manage secrets out-of-band (SealedSecrets/SOPS).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zeus
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jellebens/home-assitant.git
+    targetRevision: main
+    path: zeus/deploy/helm
+    helm:
+      valuesObject:
+        image:
+          tag: "0.1.0"
+        secret:
+          create: false
+          existingSecret: zeus-secrets
+        persistence:
+          enabled: true
+        # Override any config.* here, e.g. once discovery confirms the modes:
+        # config:
+        #   control:
+        #     enabled: true
+        #   run:
+        #     dry_run: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: home-automation
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

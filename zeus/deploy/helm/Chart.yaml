@@ -1,0 +1,14 @@
+apiVersion: v2
+name: zeus
+description: Price-aware charge/discharge optimizer for a Bluetti Apex 300 home battery
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/jellebens/home-assitant
+sources:
+  - https://github.com/jellebens/home-assitant/tree/main/zeus
+keywords:
+  - home-assistant
+  - battery
+  - energy
+  - optimization

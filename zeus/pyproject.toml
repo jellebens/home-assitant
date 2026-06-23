@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeus"
+version = "0.1.0"
+description = "Price-aware charge/discharge optimizer for a Bluetti (Buzzbrick) home battery, with ML load forecasting and savings reporting."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+    "PyYAML>=6.0",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "PuLP>=2.7",
+    "paho-mqtt>=1.6",
+]
+
+[project.optional-dependencies]
+ml = ["lightgbm>=4.0", "scikit-learn>=1.3"]
+dev = ["pytest>=7.4", "ruff>=0.4"]
+
+[project.scripts]
+zeus = "zeus.main:main"
+zeus-discover = "zeus.discover:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["zeus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
