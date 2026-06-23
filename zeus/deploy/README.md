@@ -8,8 +8,8 @@ and pulling secrets from a Kubernetes Secret.
 
 ```bash
 cd ..                       # zeus/
-docker build -t ghcr.io/jellebens/zeus:0.1.0 .
-docker push ghcr.io/jellebens/zeus:0.1.0
+docker build -t jellebens/zeus:0.1.0 .
+docker push jellebens/zeus:0.1.0
 ```
 
 ## Secrets
