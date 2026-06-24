@@ -52,6 +52,14 @@ def _load_energy_series(
     return power_history_to_energy(grid, slot)
 
 
+def _safe_mqtt(label: str, fn, *args) -> None:
+    """Run a best-effort MQTT publish; log and swallow broker errors."""
+    try:
+        fn(*args)
+    except Exception as exc:  # noqa: BLE001 - MQTT is non-critical surfacing
+        log.warning("MQTT %s failed (continuing): %s", label, exc)
+
+
 def run_once(cfg: Config, ha: HAClient, mqtt: MqttPublisher | None) -> dict:
     tz = ZoneInfo(cfg.reporting.timezone)
     slot = timedelta(minutes=cfg.optimizer.slot_minutes)
@@ -95,9 +103,10 @@ def run_once(cfg: Config, ha: HAClient, mqtt: MqttPublisher | None) -> dict:
         plan.status, plan.total_cost, plan.charge_kw[0], plan.discharge_kw[0], soc_pct,
     )
 
-    # 5. Publish + actuate.
+    # 5. Publish + actuate. MQTT is best-effort: a broker outage must not abort
+    # the optimization/actuation cycle.
     if mqtt is not None:
-        mqtt.publish_plan(plan.charge_kw, plan.discharge_kw)
+        _safe_mqtt("publish_plan", mqtt.publish_plan, plan.charge_kw, plan.discharge_kw)
     controller = Controller(ha, cfg.control, cfg.battery, cfg.run.dry_run)
     action = controller.apply(plan.charge_kw[0], plan.discharge_kw[0], soc_pct)
 
@@ -105,7 +114,7 @@ def run_once(cfg: Config, ha: HAClient, mqtt: MqttPublisher | None) -> dict:
     savings = _todays_savings(cfg, ha, tz, slot)
     if savings is not None:
         if mqtt is not None:
-            mqtt.publish_savings("today", savings)
+            _safe_mqtt("publish_savings", mqtt.publish_savings, "today", savings)
         _write_report(cfg, tz, savings)
 
     return {
