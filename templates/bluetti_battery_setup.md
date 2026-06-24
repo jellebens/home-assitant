@@ -24,9 +24,9 @@ homeassistant:
 
 If you already use `templates/` for something else, just make sure `bluetti_battery_economics.yaml` is included by your existing setup.
 
-## 3. Add the dashboard card
+## 3. Build a new dashboard from scratch (optional)
 
-Open a dashboard in YAML mode and paste in the contents of `templates/bluetti_battery_dashboard.yaml`.
+No dashboard template is included in this repository anymore. Create a new dashboard and add cards for the entities listed below based on your own layout.
 
 ## 4. Expected entities after reload
 
