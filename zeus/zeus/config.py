@@ -124,6 +124,9 @@ class PricesConfig:
     source: str = "ha_forecast"
     ha_forecast: HaForecastConfig = field(default_factory=HaForecastConfig)
     entsoe: EntsoeConfig = field(default_factory=EntsoeConfig)
+    # Multiply raw ha_forecast prices by this before markup (e.g. 0.01 to
+    # convert a Nord Pool c/kWh sensor to EUR/kWh).
+    price_scale: float = 1.0
     import_markup: float = 0.0
     export_price: float = 0.0
 

@@ -56,9 +56,14 @@ def _from_ha_forecast(cfg: PricesConfig, ha: HAClient) -> list[tuple[datetime, f
     fc = cfg.ha_forecast
     state = ha.get_state(fc.entity)
     attr = state.get("attributes", {})
-    series = attr.get(fc.forecast_attribute)
+    series = list(attr.get(fc.forecast_attribute) or [])
+    # Nord Pool (and similar) split the curve into today/tomorrow lists; append
+    # the matching tomorrow sibling so the horizon spans both days.
+    if fc.forecast_attribute.endswith("_today"):
+        tomorrow = fc.forecast_attribute[: -len("_today")] + "_tomorrow"
+        series += list(attr.get(tomorrow) or [])
     if not series:
-        # Fall back to today+tomorrow raw lists if present.
+        # Fall back to raw today+tomorrow lists if present.
         series = (attr.get("raw_today") or []) + (attr.get("raw_tomorrow") or [])
     if not series:
         raise ValueError(
@@ -77,7 +82,7 @@ def _from_ha_forecast(cfg: PricesConfig, ha: HAClient) -> list[tuple[datetime, f
             price = item.get("value")
         if ts is None or price is None:
             continue
-        out.append((_parse_dt(ts), float(price)))
+        out.append((_parse_dt(ts), float(price) * cfg.price_scale))
     out.sort(key=lambda x: x[0])
     return out
 
