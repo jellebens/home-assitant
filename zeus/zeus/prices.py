@@ -68,7 +68,10 @@ def _from_ha_forecast(cfg: PricesConfig, ha: HAClient) -> list[tuple[datetime, f
 
     out: list[tuple[datetime, float]] = []
     for item in series:
-        ts = item.get("start") or item.get("from") or item.get("datetime") or item.get("hour")
+        ts = (
+            item.get("start") or item.get("from") or item.get("datetime")
+            or item.get("time") or item.get("hour")
+        )
         price = item.get("price")
         if price is None:
             price = item.get("value")
