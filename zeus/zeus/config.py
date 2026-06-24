@@ -170,6 +170,12 @@ class RunConfig:
 
 
 @dataclass
+class MetricsConfig:
+    enabled: bool = True
+    port: int = 9000
+
+
+@dataclass
 class Config:
     home_assistant: HomeAssistantConfig = field(default_factory=HomeAssistantConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
@@ -181,6 +187,7 @@ class Config:
     forecast: ForecastConfig = field(default_factory=ForecastConfig)
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
     run: RunConfig = field(default_factory=RunConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
 
 
 def _from_dict(cls: type, data: Any) -> Any:

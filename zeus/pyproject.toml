@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeus"
-version = "0.1.5"
+version = "0.1.6"
 description = "Price-aware charge/discharge optimizer for a Bluetti (Buzzbrick) home battery, with ML load forecasting and savings reporting."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=1.24",
     "PuLP>=2.7",
     "paho-mqtt>=1.6",
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

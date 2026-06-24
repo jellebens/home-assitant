@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import metrics
 from .config import Config, load_config
 from .controller import Controller
 from .forecaster import build_forecaster, counter_history_to_energy, power_history_to_energy
@@ -127,11 +128,35 @@ def run_once(cfg: Config, ha: HAClient, mqtt: MqttPublisher | None) -> dict:
             _safe_mqtt("publish_savings", mqtt.publish_savings, "today", savings)
         _write_report(cfg, tz, savings)
 
+    # 7. Prometheus metrics.
+    metrics.SOC.set(soc_pct)
+    metrics.TARGET_CHARGE.set(plan.charge_kw[0])
+    metrics.TARGET_DISCHARGE.set(plan.discharge_kw[0])
+    metrics.PLAN_COST.set(plan.total_cost)
+    metrics.IMPORT_PRICE.set(import_price[0])
+    metrics.set_working_mode(_intent(plan.charge_kw[0], plan.discharge_kw[0], cfg))
+    if savings is not None:
+        metrics.SAVINGS_TODAY.set(savings.savings)
+        metrics.BASELINE_TODAY.set(savings.baseline_cost)
+        metrics.ACTUAL_TODAY.set(savings.actual_cost)
+        metrics.CHARGED_TODAY.set(savings.energy_charged_kwh)
+        metrics.DISCHARGED_TODAY.set(savings.energy_discharged_kwh)
+    metrics.LAST_CYCLE.set_to_current_time()
+
     return {
         "status": plan.status,
         "action": action,
         "savings_today": result_to_dict(savings) if savings else None,
     }
+
+
+def _intent(charge_kw: float, discharge_kw: float, cfg: Config) -> str:
+    thr = cfg.control.working_mode.intent_threshold_kw
+    if charge_kw >= thr and charge_kw >= discharge_kw:
+        return "charging"
+    if discharge_kw >= thr:
+        return "discharging"
+    return "passthrough"
 
 
 def _todays_savings(cfg: Config, ha: HAClient, tz: ZoneInfo, slot: timedelta):
@@ -210,6 +235,9 @@ def main() -> None:
     )
     mqtt = MqttPublisher(cfg.mqtt) if cfg.mqtt.host else None
 
+    if cfg.metrics.enabled:
+        metrics.serve(cfg.metrics.port)
+
     try:
         if args.once:
             run_once(cfg, ha, mqtt)
@@ -219,6 +247,7 @@ def main() -> None:
             try:
                 run_once(cfg, ha, mqtt)
             except Exception:  # noqa: BLE001 - keep the loop alive across transient errors
+                metrics.CYCLE_FAILURES.inc()
                 log.exception("cycle failed; retrying next interval")
             time.sleep(interval)
     finally:
