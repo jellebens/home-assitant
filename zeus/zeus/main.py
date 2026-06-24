@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Config, load_config
 from .controller import Controller
-from .forecaster import build_forecaster, power_history_to_energy
+from .forecaster import build_forecaster, counter_history_to_energy, power_history_to_energy
 from .ha_client import HAClient, history_to_series
 from .optimizer import DispatchInputs, optimize_dispatch
 from .prices import get_prices
@@ -42,13 +42,20 @@ def _slot_aligned_now(tz: ZoneInfo, slot: timedelta) -> datetime:
 
 
 def _load_energy_series(
-    ha: HAClient, entity: str, start: datetime, end: datetime, slot: timedelta
+    ha: HAClient, entity: str, start: datetime, end: datetime, slot: timedelta,
+    is_counter: bool = False,
 ):
-    """Fetch an HA power sensor's history and return per-slot energy (kWh)."""
+    """Fetch an HA sensor's history and return per-slot energy (kWh).
+
+    Power sensors (W) are integrated over the slot; cumulative energy counters
+    (kWh) are differenced when ``is_counter`` is set.
+    """
     if not entity:
         return None
     raw = ha.get_history(entity, start, end)
     grid = history_to_series(raw, start, end, slot)
+    if is_counter:
+        return counter_history_to_energy(grid)
     return power_history_to_energy(grid, slot)
 
 
@@ -77,7 +84,10 @@ def run_once(cfg: Config, ha: HAClient, mqtt: MqttPublisher | None) -> dict:
 
     # 3. Load (and solar) forecast over the horizon.
     hist_start = start - timedelta(days=cfg.forecast.history_days)
-    load_hist = _load_energy_series(ha, cfg.entities.house_load_power, hist_start, start, slot)
+    load_hist = _load_energy_series(
+        ha, cfg.entities.house_load_power, hist_start, start, slot,
+        cfg.entities.house_load_is_counter,
+    )
     forecaster = build_forecaster(cfg.forecast.model)
     if load_hist is not None and not load_hist.empty:
         forecaster.fit(load_hist)
@@ -129,7 +139,10 @@ def _todays_savings(cfg: Config, ha: HAClient, tz: ZoneInfo, slot: timedelta):
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if now - midnight < slot:
         return None  # not enough of today yet
-    load = _load_energy_series(ha, cfg.entities.house_load_power, midnight, now, slot)
+    load = _load_energy_series(
+        ha, cfg.entities.house_load_power, midnight, now, slot,
+        cfg.entities.house_load_is_counter,
+    )
     if load is None or load.empty:
         return None
     n = len(load)

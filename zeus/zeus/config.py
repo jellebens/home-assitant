@@ -73,6 +73,10 @@ class EntitiesConfig:
     grid_input_power: str = ""
     ac_output_power: str = ""
     house_load_power: str = ""
+    # True if house_load_power is a cumulative energy counter (kWh, e.g. a P1
+    # meter total_consumption) rather than an instantaneous power sensor (W).
+    # In counter mode per-slot consumption is the difference of readings.
+    house_load_is_counter: bool = False
     solar_power: str | None = None
     current_price: str = ""
 

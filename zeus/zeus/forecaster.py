@@ -133,3 +133,22 @@ def power_history_to_energy(
     index = [ts for ts, _ in series]
     values = [max(0.0, v) * factor for _, v in series]
     return pd.Series(values, index=pd.DatetimeIndex(index))
+
+
+def counter_history_to_energy(series: list[tuple[datetime, float]]) -> pd.Series:
+    """Convert a slot grid of a cumulative energy counter (kWh) into per-slot
+    energy (kWh) by differencing successive readings.
+
+    ``series`` is the LOCF-resampled output of ``ha_client.history_to_series``,
+    holding the counter value at each slot start. Each slot's consumption is the
+    increase to the next slot; a decrease (counter reset/rollover) is treated as
+    0. The last slot has no successor and is dropped.
+    """
+    if len(series) < 2:
+        return pd.Series(dtype=float)
+    index, values = [], []
+    for (t0, v0), (_t1, v1) in zip(series, series[1:]):
+        delta = v1 - v0
+        index.append(t0)
+        values.append(delta if delta >= 0 else 0.0)
+    return pd.Series(values, index=pd.DatetimeIndex(index))
