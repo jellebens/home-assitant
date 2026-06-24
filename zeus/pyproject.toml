@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeus"
-version = "0.1.3"
+version = "0.1.4"
 description = "Price-aware charge/discharge optimizer for a Bluetti (Buzzbrick) home battery, with ML load forecasting and savings reporting."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -44,6 +44,40 @@ class SavingsResult:
         return 100.0 * self.savings / self.baseline_cost if self.baseline_cost else 0.0
 
 
+def compute_arbitrage_savings(
+    charge_kwh: list[float],
+    discharge_kwh: list[float],
+    import_price: list[float],
+) -> SavingsResult:
+    """Savings for a grid-charged battery that only powers (critical) loads.
+
+    The battery charges from the grid and later discharges to loads that would
+    otherwise be served from the grid. So:
+
+        value   = sum_t discharge_kwh[t] * price[t]   (grid import avoided)
+        cost    = sum_t charge_kwh[t]    * price[t]   (paid to charge)
+        savings = value - cost
+
+    Round-trip losses are captured implicitly (charge_kwh > discharge_kwh). No
+    house-load or solar input is needed. ``baseline_cost`` is the would-be grid
+    cost of the served loads (= value); ``actual_cost`` is the charging cost.
+    """
+    n = len(charge_kwh)
+    for name, seq in (("discharge_kwh", discharge_kwh), ("import_price", import_price)):
+        if len(seq) != n:
+            raise ValueError(f"compute_arbitrage_savings: {name} length {len(seq)} != {n}")
+    value = sum(discharge_kwh[t] * import_price[t] for t in range(n))
+    cost = sum(charge_kwh[t] * import_price[t] for t in range(n))
+    return SavingsResult(
+        baseline_cost=round(value, 4),
+        actual_cost=round(cost, 4),
+        savings=round(value - cost, 4),
+        energy_charged_kwh=round(sum(charge_kwh), 3),
+        energy_discharged_kwh=round(sum(discharge_kwh), 3),
+        self_consumption_kwh=0.0,
+    )
+
+
 def compute_savings(
     load_kwh: list[float],
     solar_kwh: list[float],

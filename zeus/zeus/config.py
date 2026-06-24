@@ -154,6 +154,10 @@ class ForecastConfig:
 class ReportingConfig:
     timezone: str = "Europe/Brussels"
     output_dir: str = "reports"
+    # "arbitrage": grid-charged battery powering (critical) loads -> savings =
+    # discharge value - charge cost (no house-load sensor needed).
+    # "self_consumption": whole-home model (load/solar/grid baseline).
+    mode: str = "self_consumption"
 
 
 @dataclass

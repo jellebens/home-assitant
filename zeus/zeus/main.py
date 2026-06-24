@@ -27,7 +27,7 @@ from .forecaster import build_forecaster, counter_history_to_energy, power_histo
 from .ha_client import HAClient, history_to_series
 from .optimizer import DispatchInputs, optimize_dispatch
 from .prices import get_prices
-from .reporter import MqttPublisher, compute_savings, result_to_dict
+from .reporter import MqttPublisher, compute_arbitrage_savings, compute_savings, result_to_dict
 
 log = logging.getLogger("zeus")
 
@@ -137,21 +137,19 @@ def run_once(cfg: Config, ha: HAClient, mqtt: MqttPublisher | None) -> dict:
 def _todays_savings(cfg: Config, ha: HAClient, tz: ZoneInfo, slot: timedelta):
     now = datetime.now(tz)
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    if now - midnight < slot:
+    n = int((now - midnight) / slot)
+    if n < 1:
         return None  # not enough of today yet
-    load = _load_energy_series(
-        ha, cfg.entities.house_load_power, midnight, now, slot,
-        cfg.entities.house_load_is_counter,
-    )
-    if load is None or load.empty:
-        return None
-    n = len(load)
 
-    def series_or_zeros(entity):
-        s = _load_energy_series(ha, entity, midnight, now, slot)
-        return list(s.to_numpy()[:n]) if s is not None and not s.empty else [0.0] * n
+    def series_or_zeros(entity, is_counter=False):
+        if not entity:
+            return [0.0] * n
+        s = _load_energy_series(ha, entity, midnight, now, slot, is_counter)
+        if s is None or s.empty:
+            return [0.0] * n
+        vals = list(s.to_numpy()[:n])
+        return vals + [0.0] * (n - len(vals))
 
-    solar = series_or_zeros(cfg.entities.solar_power) if cfg.entities.solar_power else [0.0] * n
     charge = series_or_zeros(cfg.entities.grid_input_power)
     discharge = series_or_zeros(cfg.entities.ac_output_power)
 
@@ -162,10 +160,19 @@ def _todays_savings(cfg: Config, ha: HAClient, tz: ZoneInfo, slot: timedelta):
         import_price += [import_price[-1] if import_price else cfg.prices.import_markup] * (
             n - len(import_price)
         )
-    export_price = [cfg.prices.export_price] * n
 
-    load_l = list(load.to_numpy())
-    return compute_savings(load_l, solar, charge, discharge, import_price, export_price)
+    if cfg.reporting.mode == "arbitrage":
+        # Grid-charged battery powering (critical) loads: savings = value
+        # discharged - cost charged. No house-load sensor required.
+        return compute_arbitrage_savings(charge, discharge, import_price)
+
+    # Whole-home self-consumption model.
+    load = series_or_zeros(cfg.entities.house_load_power, cfg.entities.house_load_is_counter)
+    if not any(load):
+        return None
+    solar = series_or_zeros(cfg.entities.solar_power)
+    export_price = [cfg.prices.export_price] * n
+    return compute_savings(load, solar, charge, discharge, import_price, export_price)
 
 
 def _write_report(cfg: Config, tz: ZoneInfo, savings) -> None:

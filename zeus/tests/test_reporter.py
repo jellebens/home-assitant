@@ -4,7 +4,19 @@ from __future__ import annotations
 
 import pytest
 
-from zeus.reporter import compute_savings
+from zeus.reporter import compute_arbitrage_savings, compute_savings
+
+
+def test_arbitrage_savings_value_minus_charge_cost():
+    # Charge 5 kWh @ 0.10 (cheap), discharge 4 kWh @ 0.40 (peak).
+    r = compute_arbitrage_savings(
+        charge_kwh=[5.0, 0.0],
+        discharge_kwh=[0.0, 4.0],
+        import_price=[0.10, 0.40],
+    )
+    assert r.actual_cost == pytest.approx(0.50)    # charging cost
+    assert r.baseline_cost == pytest.approx(1.60)  # value of energy served
+    assert r.savings == pytest.approx(1.10)
 
 
 def test_discharge_at_peak_saves_money():
