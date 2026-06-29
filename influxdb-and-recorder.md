@@ -34,55 +34,61 @@ Create a dedicated token scoped to **write** the `homeassistant` bucket:
 - **InfluxDB UI:** open `https://influxdb.lab.local` → log in (admin creds from the
   `influxdb-auth` secret) → **Load Data → API Tokens → Generate → Custom API
   token** → Write access to bucket `homeassistant` → copy the token once.
-- **or CLI** (from the cluster):
+- **or CLI** (from the cluster — InfluxDB runs as a StatefulSet, pod
+  `influxdb-influxdb2-0`; the `homeassistant` bucket id is `5b0f1ad2efcb99f5`):
   ```sh
-  kubectl -n influxdb exec deploy/influxdb-influxdb2 -- \
-    influx auth create --org zeus --description "home-assistant" \
-    --write-bucket $(influx bucket list --org zeus --name homeassistant --hide-headers | awk '{print $1}')
+  ADMIN=$(kubectl -n influxdb get secret influxdb-auth -o jsonpath='{.data.admin-token}' | base64 -d)
+  kubectl -n influxdb exec influxdb-influxdb2-0 -- \
+    influx auth create --org zeus --write-bucket 5b0f1ad2efcb99f5 \
+    --description "home-assistant" --token "$ADMIN" --json
   ```
+  (creates a **write-only** token scoped to the `homeassistant` bucket)
 Put the token in HA `secrets.yaml` (never commit it):
 ```yaml
 # secrets.yaml
 influxdb_token: "<paste-the-homeassistant-scoped-token>"
 ```
 
-### `configuration.yaml` block
+### Set it up via the **UI config flow** — NOT YAML
 
+This HA version **deprecates the YAML `influxdb:` connection block** — it tries to
+import it into a config entry and, in our case, the import failed with *"could not
+connect"* because the import path does **not honor `verify_ssl: false`** against the
+internal lab-CA (even though `curl -sk https://influxdb.lab.local/health` succeeds
+from vesta). Don't fight the YAML; use the UI flow, which has a working SSL toggle:
+
+1. **Settings → Devices & Services → + Add Integration → "InfluxDB"**, then enter:
+   - Version **2**, Host `influxdb.lab.local`, Port **443**
+   - SSL **on**, **Verify SSL certificate OFF**  ← the key bit (internal CA)
+   - Token = the `home-assistant` token, Organization `zeus`, Bucket `homeassistant`
+2. It tests the connection live and creates the config entry.
+
+> `verify_ssl` true is only possible after the lab CA is trusted on vesta; off is
+> fine on the LAN.
+
+**Verified working 2026-06-29:** ~668 points / 15 min, 32 active entities/h,
+including `buzzbrick_*` (Bluetti grid/AC/charge/discharge) and
+`utility_room_home_energy_meter_*` (Aeotec W/kWh/V/A). Check from the cluster:
+```sh
+ADMIN=$(kubectl -n influxdb get secret influxdb-auth -o jsonpath='{.data.admin-token}' | base64 -d)
+kubectl -n influxdb exec -i influxdb-influxdb2-0 -- influx query --org zeus --token "$ADMIN" --raw \
+  'from(bucket:"homeassistant") |> range(start:-15m) |> count() |> group() |> sum()'
+```
+
+### Filtering what HA records (optional)
+
+The config-entry flow records all supported domains. To trim noise / the oversized
+price sensor, a YAML `influxdb:` block holding **only `include`/`exclude`** (no
+connection keys) still applies as a filter alongside the config entry, e.g.:
 ```yaml
 influxdb:
-  api_version: 2
-  ssl: true
-  verify_ssl: false            # internal lab-CA; set true after trusting the CA on vesta
-  host: influxdb.lab.local
-  port: 443
-  token: !secret influxdb_token
-  organization: zeus
-  bucket: homeassistant
-  max_retries: 3               # survive brief gateway/restart blips
-  precision: s
-  # Keep the DB lean & useful — record measurements, skip diagnostic noise.
-  include:
-    domains:
-      - sensor
-      - binary_sensor
-      - climate
-      - sun
   exclude:
+    entities:
+      - sensor.average_electricity_price   # 16 KB raw-price attrs
     entity_globs:
       - sensor.*_rssi
       - sensor.*_linkquality
       - sensor.*_uptime
-      - sensor.*_last_seen
-```
-
-Apply: **Developer Tools → YAML → Check Configuration**, then **Restart**. Verify
-points land:
-```sh
-# any HA series in the homeassistant bucket in the last 10m?
-curl -sk -H "Authorization: Token <token>" \
-  "https://influxdb.lab.local/api/v2/query?org=zeus" \
-  -H 'Content-Type: application/vnd.flux' \
-  --data 'from(bucket:"homeassistant") |> range(start:-10m) |> limit(n:5)'
 ```
 
 ---
