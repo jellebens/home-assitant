@@ -75,21 +75,20 @@ kubectl -n influxdb exec -i influxdb-influxdb2-0 -- influx query --org zeus --to
   'from(bucket:"homeassistant") |> range(start:-15m) |> count() |> group() |> sum()'
 ```
 
-### Filtering what HA records (optional)
+### Filtering what HA records — do NOT use a YAML `influxdb:` block
 
-The config-entry flow records all supported domains. To trim noise / the oversized
-price sensor, a YAML `influxdb:` block holding **only `include`/`exclude`** (no
-connection keys) still applies as a filter alongside the config entry, e.g.:
-```yaml
-influxdb:
-  exclude:
-    entities:
-      - sensor.average_electricity_price   # 16 KB raw-price attrs
-    entity_globs:
-      - sensor.*_rssi
-      - sensor.*_linkquality
-      - sensor.*_uptime
-```
+⚠️ **A connection-less `influxdb:` YAML block BREAKS the integration** on this HA
+version. Adding one (even with only `include`/`exclude`) re-triggers the deprecated
+YAML→config-entry import, which fails ("could not connect", since it has no
+connection keys) and **disables InfluxDB writing entirely**. Observed 2026-06-29:
+adding the filter block stopped all writes to the `homeassistant` bucket at 18:23
+(HA itself stayed up). Fix: delete the `influxdb:` block, restart.
+
+To filter, instead: use the integration's own options (**Settings → Devices &
+Services → InfluxDB → Configure**) if it offers include/exclude, or just leave it
+unfiltered — recording everything to InfluxDB is harmless. The diagnostic noise
+(`*_rssi`, `average_electricity_price`) only matters for the **recorder** DB size,
+which the `recorder:` block in §2c already handles.
 
 ---
 
