@@ -87,45 +87,72 @@ curl -sk -H "Authorization: Token <token>" \
 
 ---
 
-## 2. Recorder stopped 2026-06-22 — diagnosis & fix
+## 2. Recorder — NOT stopped; three data-quality warnings (logs 25–28 Jun 2026)
 
-The recorder is independent of the InfluxDB integration; HA needs it for the UI
-History/Logbook/Statistics. It silently stops on errors. Diagnose on the host
-(SSH/Terminal add-on or **Settings → System → Logs**):
+The recorder is **running** — it logged warnings through **28 Jun 23:45**. The
+"stopped 06-22" symptom was a misread: that was the InfluxDB *import* coverage, not
+the HA recorder. Confirm by checking **Settings → History** for a long-lived entity
+(e.g. battery SoC) — a continuous line past 06-22 means the recorder is fine.
 
-### Check, in order
-1. **Logs** around 06-22: search `recorder`. Tell-tale lines:
-   - `sqlite3.OperationalError: database or disk is full` → **disk full**
-   - `database disk image is malformed` / `disk I/O error` → **DB corruption**
-   - `The system could not validate that the database ... migrated` → **migration failure**
-2. **Disk**: `df -h` — recorder dies when `/config` (or the DB partition) fills. The
-   SQLite DB is `/config/home-assistant_v2.db`; check its size with `du -h`.
-3. **Statistics issues**: Developer Tools → Statistics (look for "fix issue").
+Three real issues surfaced in the logs, in priority order:
 
-### Fixes
-- **Disk full (most common):** free space, then bound future growth (below) and
-  restart. The unbounded DB is usually the cause.
-- **DB corrupted:** stop HA → rename `home-assistant_v2.db` (and `-wal`/`-shm`) →
-  start HA (it recreates a fresh DB). Local history before now is lost, **but
-  InfluxDB holds it going forward** once item 1 is live. Prefer restoring from a
-  backup if recent.
-- **Bound growth so it doesn't recur** — once InfluxDB owns long-term history, the
-  recorder only needs a short window for the UI:
+### 2a. `sensor.average_electricity_price` — oversized attributes + suppressed stats
+Two warnings, same sensor (the Nord Pool price sensor — its `raw_today` /
+`raw_tomorrow` 15-min arrays are huge):
+- *"State attributes … exceed maximum size of 16384 bytes … will not be stored"*
+  (156×) — HA auto-drops the bulky attributes. Harmless to data; noisy + bloats writes.
+- *"unit … (None) cannot be converted to previously compiled statistics (€/kWh) …
+  long term statistics will be suppressed"* — its unit went `None` on 25 Jun, so
+  price LTS stopped compiling.
+
+Pick one:
+- **Don't need recorded price history** (price is already in zeus / InfluxDB) →
+  exclude it; kills both warnings:
   ```yaml
   recorder:
-    purge_keep_days: 10
-    commit_interval: 5
-    auto_purge: true
     exclude:
-      entity_globs:
-        - sensor.*_rssi
-        - sensor.*_linkquality
-        - sensor.*_uptime
+      entities:
+        - sensor.average_electricity_price
   ```
-- **Catch it next time:** add a `system_monitor` disk-use sensor + an automation
-  that notifies when `/config` disk use > 85%.
+- **Want price long-term statistics** → restore the unit to `€/kWh` (Settings →
+  Devices & Services → Entities → `sensor.average_electricity_price` → ⚙ → Unit of
+  measurement), then **Developer Tools → Statistics →** find the entity → **Fix
+  issue**. The 16 KB attribute note is harmless (recorder can't drop *only*
+  attributes per entity, so just ignore it).
 
-### Why both items together
-A disk-full recorder failure is the likely root cause; moving long-term history to
-InfluxDB (item 1) **and** trimming `purge_keep_days` (item 2) keeps the SQLite DB
-small so this doesn't repeat.
+### 2b. zwave_js energy meters negative on `total_increasing`
+`sensor.home_energy_meter_gen5_electric_{consumption,production}_kwh_1` and
+`sensor.utility_room_home_energy_meter_electric_{consumption,production}_kwh_1`
+briefly report tiny negatives (−0.043, −0.013) → breaks `total_increasing` stats.
+Known Aeotec HEM Gen5 / zwave_js quirk (signed deltas; the *production* register on a
+consumption-only install dips below 0).
+- zeus uses the **`_w` consumption** sensor, **not** these `_kwh_1` accumulators —
+  simplest fix: **disable the unused `_kwh_1` entities** (especially *production*)
+  via Settings → Entities → disable. Stops the warnings.
+- If you keep them, the negatives are spurious (HA treats them as a counter reset);
+  clear via Developer Tools → Statistics → Fix issue.
+
+### 2c. Keep the DB lean (recommended regardless)
+Once InfluxDB owns long-term history (item 1), the recorder only needs a short
+window for the UI:
+```yaml
+recorder:
+  purge_keep_days: 10
+  commit_interval: 5
+  auto_purge: true
+  exclude:
+    entities:
+      - sensor.average_electricity_price
+    entity_globs:
+      - sensor.*_rssi
+      - sensor.*_linkquality
+      - sensor.*_uptime
+```
+
+### Generic fallback — if the recorder ever *truly* stops
+Symptoms: History flat-lines for all entities. Check **Settings → System → Logs**
+for `recorder`:
+- `database or disk is full` → free disk; `df -h`, `du -h /config/home-assistant_v2.db`.
+- `database disk image is malformed` / `disk I/O error` → stop HA, rename
+  `home-assistant_v2.db` (+ `-wal`/`-shm`), start HA (recreates fresh; InfluxDB keeps
+  long-term history). Prefer a backup restore if recent.
