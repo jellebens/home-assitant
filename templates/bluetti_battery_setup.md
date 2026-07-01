@@ -1,49 +1,24 @@
-# Buzzbrick Battery Economics Setup
+# Buzzbrick Battery Economics — RETIRED
 
-## 1. Current entity mapping
+> **This package has been retired.** The `bluetti_battery_economics.yaml`
+> template package (and its Bluetti HA dashboards) was removed in commit
+> `7177749`. Its economics sensors —
+> `sensor.buzzbrick_charge_cost_*`, `sensor.buzzbrick_discharge_savings_*`,
+> `sensor.buzzbrick_net_savings_today`, and the `binary_sensor.buzzbrick_mode_*`
+> helpers — were the pre-zeus economics model and **diverged from zeus**
+> (opposite-sign daily savings observed same day). They no longer exist.
+>
+> **Source of truth for battery economics is now [zeus](../zeus/README.md)**
+> and its Grafana dashboard (`zeus_battery_savings_today` et al.). Do not
+> recreate the buzzbrick economics sensors, and do not point any dashboard at
+> them.
 
-The package is currently wired to these entities:
+## Physical Bluetti sensors (still live)
 
-- `sensor.buzzbrick_ap3002532000565690_grid_input_power`
-  Buzzbrick charging power from the grid in watts.
-- `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power`
-  Buzzbrick AC output power in watts.
-- `sensor.current_electricity_market_price`
-  Current import market price in EUR per kWh.
+The raw Bluetti device sensors are provided by the Bluetti integration, not by
+this repo. These remain the physical throughput source and are unaffected:
 
-If you later want to use a different tariff sensor, update the template references and `unit_of_measurement` fields together.
+- `sensor.buzzbrick_ap3002532000565690_grid_input_power` — grid charging power (W)
+- `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power` — AC output power (W)
 
-## 2. Include the package in Home Assistant
-
-If you already use packages:
-
-```yaml
-homeassistant:
-  packages: !include_dir_named templates
-```
-
-If you already use `templates/` for something else, just make sure `bluetti_battery_economics.yaml` is included by your existing setup.
-
-## 3. Build a new dashboard from scratch (optional)
-
-No dashboard template is included in this repository anymore. Create a new dashboard and add cards for the entities listed below based on your own layout.
-
-## 4. Expected entities after reload
-
-After reloading templates, helpers, and sensors, you should see at least:
-
-- `sensor.buzzbrick_charge_cost_rate`
-- `sensor.buzzbrick_discharge_savings_rate`
-- `sensor.buzzbrick_charge_cost_total`
-- `sensor.buzzbrick_discharge_savings_total`
-- `sensor.buzzbrick_charge_cost_today`
-- `sensor.buzzbrick_discharge_savings_today`
-- `sensor.buzzbrick_net_savings_today`
-- `binary_sensor.buzzbrick_mode_charging`
-- `binary_sensor.buzzbrick_mode_passthrough`
-- `binary_sensor.buzzbrick_mode_discharging`
-
-## 5. Accuracy warning
-
-Charging cost is only correct when the charging power sensor represents grid charging only.
-If the Buzzbrick can charge from solar and grid at the same time, do not use a combined input power sensor for charging cost.
+These feed InfluxDB (see [influxdb-and-recorder.md](../influxdb-and-recorder.md)).

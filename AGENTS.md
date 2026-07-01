@@ -8,8 +8,7 @@ This repository stores Home Assistant operations docs and YAML templates for bat
   - [7-day-home-assistant-stabilization-checklist.md](7-day-home-assistant-stabilization-checklist.md)
   - [home-assistant-stabilization-mcp-prompts.md](home-assistant-stabilization-mcp-prompts.md)
   - [home-assistant-stabilization-daily-log-template.md](home-assistant-stabilization-daily-log-template.md)
-- Battery package templates and setup docs:
-  - [templates/bluetti_battery_economics.yaml](templates/bluetti_battery_economics.yaml)
+- Battery economics retirement notice (package removed; zeus is source of truth):
   - [templates/bluetti_battery_setup.md](templates/bluetti_battery_setup.md)
 - BLE to MQTT prototype script:
   - [anker_ble.py](anker_ble.py)
@@ -53,9 +52,9 @@ Key conventions:
 ### Entity Naming Conventions
 
 Device-specific entities use device aliases:
-- **Buzzbrick**: `buzzbrick_*` (battery economics templates, templates/bluetti_battery_economics.yaml)
+- **Buzzbrick**: `buzzbrick_*` (physical Bluetti device sensors from the Bluetti integration, e.g. grid/AC power). The `buzzbrick_*` economics template package was retired — see [templates/bluetti_battery_setup.md](templates/bluetti_battery_setup.md).
 - **Anker**: `anker_*` (BLE/MQTT integration, anker_ble.py, anker.yaml)
-- **Market Price**: `current_electricity_market_price` (shared across battery economics)
+- **Market Price**: `current_electricity_market_price`
 
 When adding new device templates, follow this pattern: use a short device identifier with snake_case sensor names.
 
@@ -79,14 +78,13 @@ The repository includes a 7-day structured stabilization process for Home Assist
 
 Use the prompts with Home Assistant MCP server for entity discovery, availability analysis, and remediation planning.
 
-## Battery Economics Workflow
+## Battery Economics (retired)
 
-For Buzzbrick battery integration:
-1. Map required entities in [templates/bluetti_battery_economics.yaml](templates/bluetti_battery_economics.yaml)
-2. Include package in Home Assistant and reload templates
-3. Build dashboard cards from scratch based on your own layout
-4. Verify expected sensor entities appear (see setup guide for full list)
-5. Monitor charging cost vs. discharge savings accuracy (see accuracy warning in setup guide)
+The Buzzbrick `bluetti_battery_economics.yaml` package was removed in commit
+`7177749`; its economics sensors diverged from zeus and are no longer used.
+Battery economics now live entirely in [zeus/](zeus/) and its Grafana dashboard.
+See [templates/bluetti_battery_setup.md](templates/bluetti_battery_setup.md) for
+the retirement notice and the physical sensors that remain.
 
 ## Related Docs
 
