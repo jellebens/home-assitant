@@ -14,6 +14,9 @@ This repository stores Home Assistant operations docs and YAML templates for bat
   - [anker_ble.py](anker_ble.py)
 - ESPHome config:
   - [anker.yaml](anker.yaml)
+- Fluvius cloud integration (UI-configured on vesta, NOT in this repo; the
+  `peak_power` entity feeds the LIVE jupiter lar's capacity guard):
+  - [fluvius.md](fluvius.md)
 - Bluetti battery optimizer (price-aware charge/discharge + ML + savings reporting):
   - [zeus/](zeus/) — standalone Python service; see its [README.md](zeus/README.md)
 
