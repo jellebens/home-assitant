@@ -17,6 +17,10 @@ This repository stores Home Assistant operations docs and YAML templates for bat
 - Fluvius cloud integration (UI-configured on vesta, NOT in this repo; the
   `peak_power` entity feeds the LIVE jupiter lar's capacity guard):
   - [fluvius.md](fluvius.md)
+- Jupiter-sourced battery-savings sensor (replaces the zeus MQTT-discovery
+  `sensor.zeus_battery_savings_today` ahead of the zeus decommission #169):
+  - [jupiter-savings-sensor.md](jupiter-savings-sensor.md) — runbook
+  - [templates/jupiter_savings_sensor.yaml](templates/jupiter_savings_sensor.yaml) — drop-in package
 - Bluetti battery optimizer (price-aware charge/discharge + ML + savings reporting):
   - [zeus/](zeus/) — standalone Python service; see its [README.md](zeus/README.md)
 
