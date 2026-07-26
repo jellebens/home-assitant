@@ -1,0 +1,233 @@
+# Bluetti / buzzbrick telemetry self-heal (card #212)
+# ===========================================================================
+# Makes the Bluetti *cloud* integration self-recover when a transient
+# DNS/network blip wedges its poller, so battery telemetry can't silently
+# freeze for ~44h again (incident 2026-07-24 ~19:00). Companion runbook:
+#   ../bluetti-selfheal.md   (design rationale, apply steps for vesta,
+#                             how to find the config_entry_id, #211 interlock).
+#
+# This is a drop-in Home Assistant *package*. It is NOT auto-deployed: the
+# `home-assitant` repo is docs/runbooks/packages only and does NOT sync to the
+# vesta host (vesta.local / 192.168.50.18). Apply it BY HAND on vesta:
+#   /config/packages/bluetti_selfheal.yaml
+# and make sure configuration.yaml enables packages:
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# ---------------------------------------------------------------------------
+# WHY THIS SHAPE (freshness signal — the design nuance from the card):
+#
+#  * The freeze signature was "stale-but-present": the sensors kept their last
+#    numeric value and NEVER went `unavailable`. So `availability`/`unavailable`
+#    checks do NOT catch it. We must detect that the integration stopped
+#    *polling*.
+#  * We therefore key staleness off `last_reported`, NOT `last_updated`.
+#    `last_reported` advances on EVERY successful coordinator poll even when the
+#    value is unchanged; `last_updated`/`last_changed` only move when the value
+#    changes. That distinction matters because SoC (battery_level %) — and even
+#    the power sensors overnight when the battery is idle — can hold a steady
+#    value for long stretches while the integration is perfectly healthy. Keying
+#    on `last_updated` would false-positive every idle night. Keying on
+#    `last_reported` = "did we get a fresh poll", which is exactly the freeze.
+#  * We take the MIN age across all four battery entities (the *freshest* one).
+#    They share one coordinator and froze at the same timestamp in the incident,
+#    so if even the freshest hasn't reported in > threshold, the whole
+#    integration is wedged. Using the freshest (min) makes a single entity quirk
+#    unable to trigger a false freeze — they must ALL be stale together.
+#
+# Threshold: `input_number.bluetti_stale_threshold_minutes` (default 5 min).
+# The Bluetti cloud poll cadence is seconds, so 5 min of no fresh poll = dozens
+# of missed polls = genuinely frozen. The reload automation additionally
+# requires the stale state to persist (`for: 2min`) before acting, so a blip
+# that self-heals within a poll or two never triggers a reload.
+# ===========================================================================
+
+# --- Tunable + state helpers ------------------------------------------------
+input_number:
+  bluetti_stale_threshold_minutes:
+    name: Bluetti stale-telemetry threshold
+    min: 1
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-alert
+
+input_datetime:
+  bluetti_selfheal_last_reload:
+    name: Bluetti self-heal last reload
+    has_date: true
+    has_time: true
+
+counter:
+  bluetti_selfheal_reload_count:
+    name: Bluetti self-heal reload count
+    initial: 0
+    step: 1
+    minimum: 0
+    maximum: 100
+    icon: mdi:counter
+
+# --- Freeze detector --------------------------------------------------------
+template:
+  - binary_sensor:
+      - name: Bluetti Telemetry Stale
+        unique_id: bluetti_telemetry_stale
+        device_class: problem
+        icon: mdi:battery-alert-variant-outline
+        # `now()` makes HA re-evaluate this sensor every minute automatically,
+        # giving a 1-minute staleness poll with no extra triggers.
+        state: >
+          {% set threshold = (states('input_number.bluetti_stale_threshold_minutes') | float(5)) * 60 %}
+          {% set signals = [
+            'sensor.buzzbrick_ap3002532000565690_grid_input_power',
+            'sensor.buzzbrick_ap3002532000565690_alternating_current_out_power',
+            'sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power',
+            'sensor.ap3002532000565690_battery_level'
+          ] %}
+          {% set ns = namespace(ages=[]) %}
+          {% for e in signals %}
+            {% if states(e) not in ['unknown', 'unavailable'] and states[e] is not none %}
+              {% set ns.ages = ns.ages + [ (now() - states[e].last_reported).total_seconds() ] %}
+            {% endif %}
+          {% endfor %}
+          {% if ns.ages | length == 0 %}
+            true
+          {% else %}
+            {{ (ns.ages | min) > threshold }}
+          {% endif %}
+        attributes:
+          # Age of the freshest battery signal, for dashboards / debugging.
+          freshest_signal_age_seconds: >
+            {% set signals = [
+              'sensor.buzzbrick_ap3002532000565690_grid_input_power',
+              'sensor.buzzbrick_ap3002532000565690_alternating_current_out_power',
+              'sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power',
+              'sensor.ap3002532000565690_battery_level'
+            ] %}
+            {% set ns = namespace(ages=[]) %}
+            {% for e in signals %}
+              {% if states(e) not in ['unknown', 'unavailable'] and states[e] is not none %}
+                {% set ns.ages = ns.ages + [ (now() - states[e].last_reported).total_seconds() ] %}
+              {% endif %}
+            {% endfor %}
+            {{ (ns.ages | min) | round(0) if ns.ages | length > 0 else 'unknown' }}
+          threshold_seconds: >
+            {{ (states('input_number.bluetti_stale_threshold_minutes') | float(5)) * 60 }}
+
+# --- Auto-recover + loop guard ----------------------------------------------
+automation:
+  # 1) When telemetry has been frozen for a sustained window, reload the Bluetti
+  #    config entry. Loop-guarded by a cooldown (no reload within 15 min of the
+  #    last attempt) and a hard retry cap (max 4 attempts per freeze episode).
+  - id: bluetti_selfheal_reload_on_stale
+    alias: "Bluetti self-heal: reload integration when telemetry frozen"
+    mode: single
+    trigger:
+      # Fast first response: stale for 2 min beyond the detection threshold.
+      - platform: state
+        entity_id: binary_sensor.bluetti_telemetry_stale
+        to: "on"
+        for: "00:02:00"
+        id: became_stale
+      # Retry cadence while still frozen (the cooldown condition paces it).
+      - platform: time_pattern
+        minutes: "/5"
+        id: periodic_recheck
+      # SECONDARY (optional, disabled): let card #211's Alertmanager POST here
+      # as a cross-check trigger. The HA-native detector above stands alone; this
+      # only shortens time-to-reload if the lar-side metric fires first. See the
+      # runbook "#211 interlock" section before enabling.
+      # - platform: webhook
+      #   webhook_id: bluetti_telemetry_stale_from_lar
+      #   allowed_methods: [POST]
+      #   local_only: true
+    condition:
+      - condition: state
+        entity_id: binary_sensor.bluetti_telemetry_stale
+        state: "on"
+      # Cooldown: at least 15 min since the last reload attempt. The
+      # input_datetime `timestamp` attribute is epoch seconds (tz-safe); unset
+      # default (1970) is far in the past, so the first attempt always passes.
+      - condition: template
+        value_template: >
+          {% set ts = state_attr('input_datetime.bluetti_selfheal_last_reload', 'timestamp') %}
+          {{ ts is none or (now().timestamp() - ts) > (15 * 60) }}
+    action:
+      - choose:
+          # Under the retry budget -> reload the integration.
+          - conditions:
+              - condition: numeric_state
+                entity_id: counter.bluetti_selfheal_reload_count
+                below: 4
+            sequence:
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.bluetti_selfheal_last_reload
+                data:
+                  timestamp: "{{ now().timestamp() }}"
+              - service: counter.increment
+                target:
+                  entity_id: counter.bluetti_selfheal_reload_count
+              # Target the Bluetti config entry BY ENTITY: HA resolves this
+              # entity -> its owning config entry -> reloads it. This needs NO
+              # host-side config_entry_id (see runbook for the entry_id fallback).
+              - service: homeassistant.reload_config_entry
+                target:
+                  entity_id: sensor.ap3002532000565690_battery_level
+              - service: persistent_notification.create
+                data:
+                  notification_id: bluetti_selfheal
+                  title: "Bluetti telemetry self-heal"
+                  message: >
+                    Battery telemetry was frozen (no fresh poll in
+                    {{ states('input_number.bluetti_stale_threshold_minutes') }} min).
+                    Reloaded the Bluetti integration — attempt
+                    {{ states('counter.bluetti_selfheal_reload_count') }} at
+                    {{ now().strftime('%Y-%m-%d %H:%M:%S') }}.
+              # OPTIONAL mobile push (host-specific service name; uncomment and
+              # set your notify target on vesta):
+              # - service: notify.mobile_app_<your_device>
+              #   data:
+              #     title: "Bluetti telemetry self-heal"
+              #     message: >
+              #       Frozen telemetry detected — reloaded the Bluetti integration
+              #       (attempt {{ states('counter.bluetti_selfheal_reload_count') }}).
+        # Retry budget exhausted -> stop hammering, escalate to the owner.
+        default:
+          - service: persistent_notification.create
+            data:
+              notification_id: bluetti_selfheal_escalate
+              title: "Bluetti telemetry STILL frozen — manual check needed"
+              message: >
+                Auto-recovery reloaded the Bluetti integration
+                {{ states('counter.bluetti_selfheal_reload_count') }} times and
+                telemetry is still stale. Likely a real Bluetti cloud / network
+                outage (gw.bluettipower.com) rather than a transient blip.
+                Reloads are paused until telemetry recovers. Check the Bluetti
+                integration and the wireless backhaul.
+
+  # 2) Recovery: once telemetry is fresh again for 2 min, reset the retry
+  #    counter and clear the notifications so the next episode starts clean.
+  - id: bluetti_selfheal_reset_on_recovery
+    alias: "Bluetti self-heal: reset guard on telemetry recovery"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.bluetti_telemetry_stale
+        to: "off"
+        for: "00:02:00"
+    condition:
+      # Only act if we were actually in a self-heal episode (counter > 0).
+      - condition: numeric_state
+        entity_id: counter.bluetti_selfheal_reload_count
+        above: 0
+    action:
+      - service: counter.reset
+        target:
+          entity_id: counter.bluetti_selfheal_reload_count
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: bluetti_selfheal
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: bluetti_selfheal_escalate
