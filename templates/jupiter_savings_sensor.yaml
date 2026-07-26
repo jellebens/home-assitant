@@ -1,0 +1,74 @@
+# Jupiter-sourced daily battery savings sensor (card #166)
+# ---------------------------------------------------------------------------
+# Replaces the zeus-owned `sensor.zeus_battery_savings_today` (published to HA
+# by the zeus service over MQTT discovery) with a jupiter-fed sensor, ahead of
+# the zeus decommission (#169, ~2026-08-06). See ../jupiter-savings-sensor.md
+# for the source justification, the token/secret step, the deploy path to
+# vesta, validation, consumers, and the removal plan.
+#
+# This is a drop-in Home Assistant *package*. It is NOT auto-deployed: the
+# `home-assitant` repo is docs/runbooks only and does not sync to the vesta
+# host. Apply it by hand on vesta (Samba/File-editor) as:
+#   /config/packages/jupiter_savings_sensor.yaml
+# and ensure configuration.yaml enables packages:
+#   homeassistant:
+#     packages: !include_dir_named packages
+# (or paste the two blocks below into configuration.yaml directly).
+#
+# PRE-REQ (owner step, live-prod — see runbook §2): mint an InfluxDB token that
+# can READ the `zeus` bucket and add it to secrets.yaml as
+# `influxdb_zeus_read_token`. The existing HA `homeassistant` token is
+# write-only to the `homeassistant` bucket and CANNOT read `zeus`.
+#
+# NOTE (landmine): this does NOT add a top-level `influxdb:` key. The recorder
+# doc's scar (a connection-less top-level `influxdb:` block breaks the write
+# integration by re-triggering the deprecated YAML import) does NOT apply to the
+# `sensor:` platform below — it is a separate, YAML-only query sensor. Confirm
+# on the next HA restart that InfluxDB history writes still flow.
+
+# 1) Raw read: pull jupiter's running daily savings straight from InfluxDB.
+#    The InfluxDB `sensor` platform cannot set device_class/state_class/
+#    unique_id, so this stays a bare helper and the template below dresses it.
+sensor:
+  - platform: influxdb
+    api_version: 2
+    host: influxdb.lab.local
+    port: 443
+    ssl: true
+    verify_ssl: false            # internal lab-CA; same as the write integration
+    token: !secret influxdb_zeus_read_token
+    organization: zeus
+    queries_flux:
+      - name: jupiter_savings_influx_raw
+        bucket: zeus
+        # Look back far enough to always catch the last written point even if
+        # the reporting-service refresh (60s) briefly stalls.
+        range_start: "-26h"
+        group_function: last
+        # VERIFY the field name once against the live schema (runbook §3):
+        #   influx query 'from(bucket:"zeus") |> range(start:-1h)
+        #     |> filter(fn:(r)=>r._measurement=="jupiter_daily_savings")
+        #     |> keep(columns:["_field","site_id"]) |> distinct(column:"_field")'
+        # It mirrors zeus's writer, so `_field == "value"` is expected.
+        query: >
+          |> filter(fn: (r) => r._measurement == "jupiter_daily_savings"
+             and r.site_id == "tervuren" and r._field == "value")
+        value_template: "{{ value | float(0) | round(2) }}"
+        unit_of_measurement: "€"
+
+# 2) Presentation sensor: the real replacement entity. Matches the old zeus
+#    entity's units/classes so the kiosk panel, Grafana panels, and any
+#    automations behave the same. Adjust device_class/state_class here if the
+#    live `sensor.zeus_battery_savings_today` differs (Developer Tools -> States).
+template:
+  - sensor:
+      - name: Jupiter Battery Savings Today
+        unique_id: jupiter_battery_savings_today
+        unit_of_measurement: "€"
+        device_class: monetary
+        state_class: total
+        availability: >
+          {{ states('sensor.jupiter_savings_influx_raw') not in ['unknown', 'unavailable', 'none', ''] }}
+        state: >
+          {% set v = states('sensor.jupiter_savings_influx_raw') | float(0) %}
+          {{ v | round(2) }}
