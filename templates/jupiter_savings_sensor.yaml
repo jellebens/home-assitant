@@ -45,14 +45,13 @@ sensor:
         # the reporting-service refresh (60s) briefly stalls.
         range_start: "-26h"
         group_function: last
-        # VERIFY the field name once against the live schema (runbook §3):
-        #   influx query 'from(bucket:"zeus") |> range(start:-1h)
-        #     |> filter(fn:(r)=>r._measurement=="jupiter_daily_savings")
-        #     |> keep(columns:["_field","site_id"]) |> distinct(column:"_field")'
-        # It mirrors zeus's writer, so `_field == "value"` is expected.
+        # Field name VERIFIED against the live schema 2026-07-27 (runbook §5):
+        # `_field == "eur"` (NOT "value" — jupiter's writer differs from zeus's).
+        # NOTE: HA prepends `from(bucket:...) |> range(...) |> ` to this query,
+        # so it must NOT start with `|>` (doubled pipe = Flux 400 on every poll).
         query: >
-          |> filter(fn: (r) => r._measurement == "jupiter_daily_savings"
-             and r.site_id == "tervuren" and r._field == "value")
+          filter(fn: (r) => r._measurement == "jupiter_daily_savings"
+             and r.site_id == "tervuren" and r._field == "eur")
         value_template: "{{ value | float(0) | round(2) }}"
         unit_of_measurement: "€"
 
