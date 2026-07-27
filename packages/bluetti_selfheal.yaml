@@ -1,8 +1,11 @@
-# Bluetti / buzzbrick telemetry self-heal (card #212)
+# Bluetti / buzzbrick telemetry self-heal (cards #212, #214)
 # ===========================================================================
 # Makes the Bluetti *cloud* integration self-recover when a transient
 # DNS/network blip wedges its poller, so battery telemetry can't silently
-# freeze for ~44h again (incident 2026-07-24 ~19:00). Companion runbook:
+# freeze for ~44h again (incident 2026-07-24 ~19:00). #214 adds a second
+# freeze-mode detector — FRESH all-zeros (incident 2026-07-26) — that the
+# `last_reported`-freshness logic below cannot see; it reuses the SAME reload
+# automation, cooldown and retry cap. Companion runbook:
 #   ../bluetti-selfheal.md   (design rationale, apply steps for vesta,
 #                             how to find the config_entry_id, #211 interlock).
 #
@@ -114,6 +117,53 @@ template:
           threshold_seconds: >
             {{ (states('input_number.bluetti_stale_threshold_minutes') | float(5)) * 60 }}
 
+      # Fresh all-zeros detector (incident 2026-07-26). A DIFFERENT freeze mode:
+      # the cloud integration kept polling — `last_reported` advanced every ~13s,
+      # so the stale detector above stayed `off` — but it reported SoC, grid-in
+      # AND AC-out all EXACTLY 0 at once. That is physically implausible for a
+      # live, charged battery in a house that always draws some load, so we treat
+      # the simultaneous all-zeros as a wedged integration and reload it too.
+      #
+      # SOLAR IS DELIBERATELY EXCLUDED from the conjunction: PV input is
+      # legitimately 0 every night, so requiring it == 0 would not discriminate a
+      # fault from a normal dusk — it would only add false negatives (never a
+      # true positive). We require the SoC, grid-in and AC-out to be all present
+      # (not unknown/unavailable) AND all ~0 (small epsilon float compare).
+      - name: Bluetti Telemetry All Zero
+        unique_id: bluetti_telemetry_all_zero
+        device_class: problem
+        icon: mdi:battery-off-outline
+        state: >
+          {% set eps = 0.001 %}
+          {% set soc = 'sensor.ap3002532000565690_battery_level' %}
+          {% set grid = 'sensor.buzzbrick_ap3002532000565690_grid_input_power' %}
+          {% set ac = 'sensor.buzzbrick_ap3002532000565690_alternating_current_out_power' %}
+          {% set signals = [soc, grid, ac] %}
+          {% set ns = namespace(present=true) %}
+          {% for e in signals %}
+            {% if states(e) in ['unknown', 'unavailable'] or states[e] is none %}
+              {% set ns.present = false %}
+            {% endif %}
+          {% endfor %}
+          {% if not ns.present %}
+            false
+          {% else %}
+            {{ ((states(soc) | float(0)) | abs) < eps
+               and ((states(grid) | float(0)) | abs) < eps
+               and ((states(ac) | float(0)) | abs) < eps }}
+          {% endif %}
+        attributes:
+          # Raw values of the three conjuncts, for dashboards / debugging. Solar
+          # is shown too (context only) but is NOT part of the trigger logic.
+          soc_percent: >
+            {{ states('sensor.ap3002532000565690_battery_level') }}
+          grid_input_power_w: >
+            {{ states('sensor.buzzbrick_ap3002532000565690_grid_input_power') }}
+          ac_output_power_w: >
+            {{ states('sensor.buzzbrick_ap3002532000565690_alternating_current_out_power') }}
+          photovoltaics_input_power_w_excluded: >
+            {{ states('sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power') }}
+
 # --- Auto-recover + loop guard ----------------------------------------------
 automation:
   # 1) When telemetry has been frozen for a sustained window, reload the Bluetti
@@ -129,6 +179,13 @@ automation:
         to: "on"
         for: "00:02:00"
         id: became_stale
+      # Same fast first response for the fresh all-zeros mode (short debounce so a
+      # single spurious zeros sample that self-corrects never triggers a reload).
+      - platform: state
+        entity_id: binary_sensor.bluetti_telemetry_all_zero
+        to: "on"
+        for: "00:02:00"
+        id: became_all_zero
       # Retry cadence while still frozen (the cooldown condition paces it).
       - platform: time_pattern
         minutes: "/5"
@@ -142,9 +199,18 @@ automation:
       #   allowed_methods: [POST]
       #   local_only: true
     condition:
-      - condition: state
-        entity_id: binary_sensor.bluetti_telemetry_stale
-        state: "on"
+      # Either freeze mode is currently active: no fresh poll (stale) OR a fresh
+      # but physically-implausible all-zeros reading. Both funnel through the same
+      # cooldown + retry-cap loop guard below, so a persistently-all-zeros cloud
+      # can no more hammer reloads than a persistently-stale one.
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: binary_sensor.bluetti_telemetry_stale
+            state: "on"
+          - condition: state
+            entity_id: binary_sensor.bluetti_telemetry_all_zero
+            state: "on"
       # Cooldown: at least 15 min since the last reload attempt. The
       # input_datetime `timestamp` attribute is epoch seconds (tz-safe); unset
       # default (1970) is far in the past, so the first attempt always passes.
@@ -179,8 +245,9 @@ automation:
                   notification_id: bluetti_selfheal
                   title: "Bluetti telemetry self-heal"
                   message: >
-                    Battery telemetry was frozen (no fresh poll in
-                    {{ states('input_number.bluetti_stale_threshold_minutes') }} min).
+                    Battery telemetry looked frozen — stale poll
+                    ({{ states('binary_sensor.bluetti_telemetry_stale') }}) or fresh
+                    all-zeros ({{ states('binary_sensor.bluetti_telemetry_all_zero') }}).
                     Reloaded the Bluetti integration — attempt
                     {{ states('counter.bluetti_selfheal_reload_count') }} at
                     {{ now().strftime('%Y-%m-%d %H:%M:%S') }}.
@@ -201,10 +268,12 @@ automation:
               message: >
                 Auto-recovery reloaded the Bluetti integration
                 {{ states('counter.bluetti_selfheal_reload_count') }} times and
-                telemetry is still stale. Likely a real Bluetti cloud / network
-                outage (gw.bluettipower.com) rather than a transient blip.
-                Reloads are paused until telemetry recovers. Check the Bluetti
-                integration and the wireless backhaul.
+                telemetry is still frozen (stale
+                {{ states('binary_sensor.bluetti_telemetry_stale') }} / all-zeros
+                {{ states('binary_sensor.bluetti_telemetry_all_zero') }}). Likely a
+                real Bluetti cloud / network outage (gw.bluettipower.com) rather
+                than a transient blip. Reloads are paused until telemetry recovers.
+                Check the Bluetti integration and the wireless backhaul.
 
   # 2) Recovery: once telemetry is fresh again for 2 min, reset the retry
   #    counter and clear the notifications so the next episode starts clean.
@@ -216,11 +285,25 @@ automation:
         entity_id: binary_sensor.bluetti_telemetry_stale
         to: "off"
         for: "00:02:00"
+      - platform: state
+        entity_id: binary_sensor.bluetti_telemetry_all_zero
+        to: "off"
+        for: "00:02:00"
     condition:
       # Only act if we were actually in a self-heal episode (counter > 0).
       - condition: numeric_state
         entity_id: counter.bluetti_selfheal_reload_count
         above: 0
+      # An episode only "recovers" once BOTH freeze signatures have cleared: a
+      # reload can fix one mode (e.g. staleness) while the other (all-zeros) is
+      # still active, and resetting the retry cap then would let the still-broken
+      # mode start a fresh, uncapped episode. Require both off.
+      - condition: state
+        entity_id: binary_sensor.bluetti_telemetry_stale
+        state: "off"
+      - condition: state
+        entity_id: binary_sensor.bluetti_telemetry_all_zero
+        state: "off"
     action:
       - service: counter.reset
         target:
