@@ -112,8 +112,8 @@ not performed by the agent.
       |> filter(fn:(r)=>r._measurement=="jupiter_daily_savings" and r.site_id=="tervuren")
       |> last()'
   ```
-  Also confirm the field name (expected `value`) — if it differs, fix the
-  `_field` filter in the package's Flux query.
+  Also confirm the field name — verified `eur` on 2026-07-27 (the package's
+  `_field` filter uses `eur`; the original `value` assumption was wrong).
 - In HA: **Developer Tools → States →** `sensor.jupiter_battery_savings_today`
   should read the same number (± a rounding step) as
   `sensor.zeus_battery_savings_today`, and both should track
@@ -154,5 +154,11 @@ Known consumers (none are inside this repo):
   it must be applied on the vesta host (§4). This PR delivers the ready-to-apply
   package + runbook; the live apply, the InfluxDB read token, and the field-name
   check are owner steps.
-- **Field name** for `jupiter_daily_savings` (`_field`) is assumed `value` and
-  should be confirmed once (§5).
+- **Field name** for `jupiter_daily_savings` (`_field`) is **`eur`** — verified
+  2026-07-27 against the live schema (§5 query; last point `0.107` @
+  2026-07-26T22:00Z). The initial assumption of `value` was wrong.
+- **Query syntax scar (card #215):** HA's `queries_flux` platform builds
+  `from(bucket:...) |> range(...) |> <query> |> <group_function>(...)`, so the
+  package's `query:` must **not** start with `|>`. The first applied version
+  did, and every 60s poll failed with a Flux 400 (`pipe destination must be a
+  function call`) in the HA log while the raw sensor sat `unavailable`.
