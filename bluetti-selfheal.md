@@ -1,7 +1,13 @@
-# Bluetti telemetry self-heal — card #212
+# Bluetti telemetry self-heal — cards #212, #214
 
 Make the Bluetti / buzzbrick **cloud** integration self-recover so a transient
 DNS/network blip can't silently freeze the battery telemetry for ~44h again.
+
+**#214 extends this** with a second freeze-mode detector for **fresh all-zeros**
+(incident 2026-07-26) that the original `last_reported`-freshness logic cannot
+see — it reuses the same reload automation, cooldown and retry cap. See
+[§1a](#1a-the-second-incident-fresh-all-zeros--214) and
+[§2a](#2a-fresh-all-zeros-detector--214).
 
 The HA instance runs on **vesta.local (192.168.50.18)**, not in k8s. This repo is
 **docs/runbooks/packages only and does NOT sync to vesta** — merging deploys
@@ -30,15 +36,43 @@ dead aiohttp connector and never retried until the owner manually reloaded it.
 The whole-home HEM meter and `select.apex300_working_mode` are on other paths and
 stayed fine.
 
+## 1a. The second incident — fresh all-zeros (#214)
+
+On **2026-07-26** the same cloud integration failed a *different* way. It kept
+polling normally — the coordinator re-reported every ~13 s, so `last_reported`
+advanced continuously — but every reported value was **exactly 0 at once**:
+
+- `sensor.ap3002532000565690_battery_level` (SoC) = 0
+- `sensor.buzzbrick_ap3002532000565690_grid_input_power` = 0
+- `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power` = 0
+- `sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power` = 0
+
+This is **fresh-but-wrong**, the mirror of the §1 stale-but-present freeze:
+
+- The §1 detector keys off **`last_reported` freshness**. Here `last_reported`
+  keeps advancing (the poll succeeds, it just returns zeros), so
+  `binary_sensor.bluetti_telemetry_stale` stays **`off`** — the original
+  self-heal **never fires**.
+- A simultaneous SoC = 0, grid-in = 0, **and** AC-out = 0 is physically
+  implausible for a live, charged battery in a house that always draws some
+  load. It is a distinct signature we can detect on **value**, not freshness.
+
+Why it matters even though it fail-safed this time: on 2026-07-26 the fake SoC
+was 0 (≤ floor → the controller did not discharge). The dangerous mirror is a
+fresh-spurious **high** SoC, which the lar-side guard in the parent card #214
+handles. This HA companion covers the **all-zeros** case and reloads the wedged
+integration, which is the only thing that clears it.
+
 ## 2. What the package does
 
 | Piece | Entity | Job |
 |---|---|---|
-| Detector | `binary_sensor.bluetti_telemetry_stale` | `on` when the battery telemetry is frozen |
-| Threshold | `input_number.bluetti_stale_threshold_minutes` (default **5 min**) | tune detection without editing templates |
-| Auto-recover | automation `bluetti_selfheal_reload_on_stale` | reloads the Bluetti config entry |
-| Loop guard | `input_datetime.bluetti_selfheal_last_reload` + `counter.bluetti_selfheal_reload_count` | 15-min cooldown, max 4 reloads/episode, then escalate |
-| Recovery reset | automation `bluetti_selfheal_reset_on_recovery` | clears the guard + notifications once fresh again |
+| Detector (stale) | `binary_sensor.bluetti_telemetry_stale` | `on` when the battery telemetry stops polling (frozen) |
+| Detector (all-zeros, #214) | `binary_sensor.bluetti_telemetry_all_zero` | `on` when SoC + grid-in + AC-out are all present and all ~0 |
+| Threshold | `input_number.bluetti_stale_threshold_minutes` (default **5 min**) | tune stale detection without editing templates |
+| Auto-recover | automation `bluetti_selfheal_reload_on_stale` | reloads the Bluetti config entry (fired by **either** detector) |
+| Loop guard | `input_datetime.bluetti_selfheal_last_reload` + `counter.bluetti_selfheal_reload_count` | 15-min cooldown, max 4 reloads/episode, then escalate — **shared** by both modes |
+| Recovery reset | automation `bluetti_selfheal_reset_on_recovery` | clears the guard + notifications once **both** detectors are off |
 
 ### Freshness signal — why `last_reported`, not `last_updated`
 
@@ -65,6 +99,48 @@ entirely. We must detect that the integration **stopped polling**:
 If your HA build predates `last_reported` (added 2024.8), fall back to
 `last_updated` and raise the threshold well above the longest expected idle
 steady-value stretch — but every current build has `last_reported`.
+
+## 2a. Fresh all-zeros detector (#214)
+
+`binary_sensor.bluetti_telemetry_all_zero` catches the §1a mode that the
+freshness detector is blind to. It is **value-based**, not time-based:
+
+- It is `on` only when **all three** of SoC
+  (`sensor.ap3002532000565690_battery_level`), grid-in
+  (`sensor.buzzbrick_ap3002532000565690_grid_input_power`) and AC-out
+  (`sensor.buzzbrick_ap3002532000565690_alternating_current_out_power`) are
+  **present** (not `unknown`/`unavailable`) **and** all within a small epsilon
+  of 0. If any one is missing, it is `off` (we cannot assert all-zeros).
+- **Solar (PV) is deliberately EXCLUDED** from the conjunction.
+  `sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power` is
+  legitimately 0 every night, so requiring it == 0 would not discriminate a
+  fault from a normal dusk — it would only add false negatives, never a true
+  positive. PV is still exposed as the `photovoltaics_input_power_w_excluded`
+  attribute for context/debugging, but it is not part of the trigger logic. The
+  three conjuncts are also exposed as `soc_percent`, `grid_input_power_w` and
+  `ac_output_power_w` attributes.
+- Being value-based, it re-evaluates whenever those entities change state; it
+  needs no `now()` tick. (The stale detector uses `now()` because staleness is
+  time-based.)
+
+**Why `last_reported`-freshness misses it:** in this mode the poll keeps
+succeeding — `last_reported` advances every ~13 s — so the freshest-signal age
+stays tiny and `binary_sensor.bluetti_telemetry_stale` never goes `on`. The
+integration is "fresh" by every timing measure; it is only the *values* that are
+wrong. Detecting it therefore requires inspecting the values, which is exactly
+what this sensor does.
+
+**Wiring (same guard, not a second one):** the all-zeros sensor is added as an
+**additional trigger** on `bluetti_selfheal_reload_on_stale`, with the same
+`for: "00:02:00"` debounce as the stale trigger. The reload condition became an
+`or` of the two detectors, and the action, cooldown
+(`input_datetime.bluetti_selfheal_last_reload`) and retry cap
+(`counter.bluetti_selfheal_reload_count`, max 4/episode) are **reused unchanged**
+— so a persistently-all-zeros cloud can no more hammer reloads than a
+persistently-stale one. The recovery/reset automation now triggers on *either*
+detector clearing but only resets the guard once **both** are `off`, so a reload
+that fixes one mode while the other is still active does not hand the still-broken
+mode a fresh, uncapped retry budget.
 
 ### Reload mechanism
 
@@ -119,9 +195,20 @@ no host config). An optional `notify.mobile_app_<device>` push is included
 5. Sanity-check in Developer Tools → States:
    - `binary_sensor.bluetti_telemetry_stale` = `off`, and its
      `freshest_signal_age_seconds` attribute is small (a few seconds).
+   - `binary_sensor.bluetti_telemetry_all_zero` = `off` (unless the battery is
+     genuinely at 0 with no grid-in and no AC-out — check its `soc_percent`,
+     `grid_input_power_w`, `ac_output_power_w` attributes show the real values).
    - Optionally test the recovery path: Developer Tools → Actions, run
      `homeassistant.reload_config_entry` on the same entity and confirm the
      sensors come back fresh.
+
+> **#214 is OBSERVE-FIRST on the lar side, but the HA reload is active.** The
+> parent card #214 ships the lar-side implausibility *guard* metric-only first;
+> this HA companion, like the rest of the self-heal package, is a live reload —
+> reloading a wedged cloud integration only ever *restores* telemetry, so it is
+> safe to run from day one. Watch `binary_sensor.bluetti_telemetry_all_zero`
+> across at least one overnight to confirm zero false positives before relying
+> on it.
 
 ## 4. Verify auto-recovery once (optional, owner)
 
