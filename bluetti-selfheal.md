@@ -1,4 +1,4 @@
-# Bluetti telemetry self-heal — cards #212, #214
+# Bluetti telemetry self-heal — cards #212, #214, #246
 
 Make the Bluetti / buzzbrick **cloud** integration self-recover so a transient
 DNS/network blip can't silently freeze the battery telemetry for ~44h again.
@@ -8,6 +8,16 @@ DNS/network blip can't silently freeze the battery telemetry for ~44h again.
 see — it reuses the same reload automation, cooldown and retry cap. See
 [§1a](#1a-the-second-incident-fresh-all-zeros--214) and
 [§2a](#2a-fresh-all-zeros-detector--214).
+
+**#246 extends this** with an owner-facing escalation: when the auto-heal has
+**spent its whole reload budget** (counter cap 4) and telemetry is **still**
+frozen, a persistent notification tells the owner to **power-cycle the battery**
+by hand — because reloading the integration can't fix a battery/firmware hang
+(e.g. the 2026-08-19 firmware crash) or a real Bluetti-cloud outage. It reuses
+#212/#214's detectors + counter (no new detector). See
+[§2b](#2b-owner-escalation--when-auto-heal-gives-up-246). #246 also
+**re-verified the Bluetti entity IDs** after the 08-19 crash — see
+[§8](#8-entity-id-re-verification-246).
 
 The HA instance runs on **vesta.local (192.168.50.18)**, not in k8s. This repo is
 **docs/runbooks/packages only and does NOT sync to vesta** — merging deploys
@@ -72,6 +82,7 @@ integration, which is the only thing that clears it.
 | Threshold | `input_number.bluetti_stale_threshold_minutes` (default **5 min**) | tune stale detection without editing templates |
 | Auto-recover | automation `bluetti_selfheal_reload_on_stale` | reloads the Bluetti config entry (fired by **either** detector) |
 | Loop guard | `input_datetime.bluetti_selfheal_last_reload` + `counter.bluetti_selfheal_reload_count` | 15-min cooldown, max 4 reloads/episode, then escalate — **shared** by both modes |
+| Owner escalation (#246) | automation `bluetti_selfheal_notify_stuck` | fires a "power-cycle the battery" persistent notification when the reload budget is spent (counter cap 4) **and** telemetry is still frozen |
 | Recovery reset | automation `bluetti_selfheal_reset_on_recovery` | clears the guard + notifications once **both** detectors are off |
 
 ### Freshness signal — why `last_reported`, not `last_updated`
@@ -162,19 +173,70 @@ from this repo unfilled. (Fallback by explicit id in §5.)
 - **Cooldown:** no reload within **15 min** of the last attempt (epoch-timestamp
   compare, tz-safe).
 - **Retry cap:** at most **4** reloads per freeze episode. Attempts land at
-  roughly +7, +22, +37, +52 min; after the 4th, reloads pause and a persistent
-  notification escalates ("likely a real cloud/network outage").
+  roughly +7, +22, +37, +52 min; after the 4th, reloads pause and the owner
+  escalation (§2b) fires the "power-cycle the battery" notification.
 - **Reset:** when telemetry is fresh again for 2 min, the counter resets and the
   notifications clear, so the next episode starts from zero.
 
 A transient blip self-heals on attempt 1; a genuine multi-hour Bluetti-cloud
 outage escalates once and then stays quiet.
 
+## 2b. Owner escalation — when auto-heal gives up (#246)
+
+The self-heal only ever reloads the **HA integration**. That clears a wedged
+poller, but it can do nothing about a **battery-side hang** (the 2026-08-19
+Bluetti firmware crash), a locked-up unit, or a real Bluetti-cloud outage — for
+those the only fix is a **human power-cycle of the battery**. So once the
+auto-heal has spent its budget and telemetry is still frozen, a human needs a
+heads-up.
+
+Automation `bluetti_selfheal_notify_stuck`:
+
+- **Condition — "reloads exhausted AND still frozen":**
+  `counter.bluetti_selfheal_reload_count` at the cap (**≥ 4** — the reload action
+  only increments while below 4, so it parks at 4) **and** either
+  `binary_sensor.bluetti_telemetry_stale` **or**
+  `binary_sensor.bluetti_telemetry_all_zero` still `on`. This is the "auto-heal
+  gave up" signal — deliberately **not** noise on every lumpy poll gap: a
+  transient blip self-heals on reload attempt 1 and never reaches the cap.
+- **Triggers (both edge once per episode → no spam):**
+  - *primary* — the counter has been parked at the cap for **5 min**
+    (`numeric_state above: 3, for: 00:05:00`), i.e. the 4th reload landed and did
+    not clear the freeze. The counter resets to 0 on recovery, so this can only
+    edge once per episode.
+  - *backstop* — either detector has been continuously `on` for **30 min**
+    (still gated by the exhausted-budget condition, so it can't fire early).
+- **Action:** `persistent_notification.create` (id `bluetti_telemetry_stuck`,
+  title *"Bluetti telemetry STUCK — power-cycle the battery"*). Always available,
+  no host config; shows in the HA UI and the companion app. The message reports
+  how many reloads were tried, which freeze mode is active, the freshest signal
+  age in minutes, and the action: **power-cycle the Bluetti battery**, then check
+  the integration and the wireless backhaul.
+- **Optional phone push:** a `notify.mobile_app_<device>` block is included
+  **commented out** with a placeholder — the exact service name is host-side and
+  could not be confirmed from this repo (see §8). Uncomment it on vesta and set
+  your device's service (Developer Tools → Actions → type `notify.mobile_app_`
+  and read the autocomplete). Because the automation edges once per episode, the
+  push is one-shot — no repeat spam.
+- **Dismiss:** the recovery automation (§Loop guard "Reset") dismisses
+  `bluetti_telemetry_stuck` when both detectors clear, so it's one card per
+  episode.
+
+**Supersedes the old inline escalate.** #212's reload automation used to create a
+generic `bluetti_selfheal_escalate` notification in its over-budget branch; that
+re-fired on every ~15-min recheck tick and couldn't carry a clean one-shot push.
+#246 removes it — the reload automation now simply no-ops when over budget — and
+moves escalation into this dedicated automation. The recovery reset still
+dismisses the legacy `bluetti_selfheal_escalate` id as a harmless no-op so any
+card left on vesta from before the re-apply gets cleared.
+
 ### Notifications
 
-Persistent notifications fire on each reload and on escalation (always-available,
-no host config). An optional `notify.mobile_app_<device>` push is included
-**commented out** — uncomment and set your device's notify service on vesta.
+Persistent notifications fire on each reload (`bluetti_selfheal`) and on the
+owner escalation (`bluetti_telemetry_stuck`, §2b) — both always-available, no
+host config. An optional `notify.mobile_app_<device>` push is included
+**commented out** on both — uncomment and set your device's notify service on
+vesta.
 
 ## 3. Apply on vesta (owner step — live-prod, not done by the agent)
 
@@ -273,3 +335,57 @@ detector stands alone; the webhook is purely additive.
 - **Naming:** `buzzbrick_*` here refers only to the existing physical Bluetti
   device sensors — this package references them, it does not reintroduce any
   retired `buzzbrick_*` economics entities.
+
+## 8. Entity-ID re-verification (#246)
+
+The **2026-08-19 Bluetti firmware crash + integration reload** raised the worry
+that HA could have re-created the Bluetti entities under **new IDs**, which would
+silently break both these detectors and the jupiter-lar reads. #246 re-checked
+the IDs.
+
+**Configured Bluetti / battery entity IDs (unchanged — still the ones this
+package and the lar use):**
+
+| Role | Entity ID |
+|---|---|
+| SoC | `sensor.ap3002532000565690_battery_level` |
+| grid-in | `sensor.buzzbrick_ap3002532000565690_grid_input_power` |
+| AC-out (house load) | `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power` |
+| PV-in (solar) | `sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power` |
+| working-mode control | `select.apex300_working_mode` |
+| whole-home import | `sensor.utility_room_home_energy_meter_electric_consumption_w` |
+| capacity peak (Fluvius) | `sensor.fluvius_meter_1sag1100121989_peak_power` |
+| office A/C power | `sensor.office_a_c_power` |
+
+**Evidence they did NOT change:**
+
+- **lar read-health (Prometheus, 2026-08-26):** the lar's SoC read works
+  (SoC recovered to ~51 %) and 24 h HA read-error rates are **low** (SoC ~0.6 %,
+  grid low). A *changed* entity ID would fail ~**100 %** of reads, not ~0.6 % —
+  so the IDs the lar is configured with still resolve. The self-heal detectors
+  read the **same** IDs, so they resolve too.
+- Home Assistant's entity **registry keys entities by a stable unique_id**, and a
+  firmware crash + integration *reload* (not a delete/re-add of the config entry)
+  re-uses the existing registry entries — it does not mint new object IDs.
+
+**What could NOT be confirmed here, and why (flagged for owner spot-check):**
+the sanctioned HA access for this agent is **Assist/MCP only**, and none of the
+Bluetti/energy/Fluvius/working-mode entities are **exposed to Assist** (only a
+couple of Office climate entities are). Per-entity live confirmation via the
+sanctioned tools was therefore **not possible**, and dumping `/api/states` or
+extracting the HA token is **out of policy** (a prior attempt tripped the
+security classifier). So this verification rests on the **indirect** read-health
+evidence above, which is strong but not a per-entity string match.
+
+**Owner spot-check (2 min, do once):** Developer Tools → States, filter
+`ap3002532000565690` and confirm the four Bluetti IDs above still exist; then
+confirm `select.apex300_working_mode`,
+`sensor.utility_room_home_energy_meter_electric_consumption_w`,
+`sensor.fluvius_meter_1sag1100121989_peak_power` and `sensor.office_a_c_power`.
+If **any** differs, update it in **all three** places, consistently:
+
+1. this package (`packages/bluetti_selfheal.yaml`) — the stale + all-zero
+   detectors;
+2. the lar config — gitops `landingzones/jupiter-tervuren/values.yaml`
+   `siteConfig.entities` (**separate gitops PR**, not this repo);
+3. the Grafana dashboards (tracked separately under #245).

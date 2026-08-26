@@ -1,11 +1,15 @@
-# Bluetti / buzzbrick telemetry self-heal (cards #212, #214)
+# Bluetti / buzzbrick telemetry self-heal (cards #212, #214, #246)
 # ===========================================================================
 # Makes the Bluetti *cloud* integration self-recover when a transient
 # DNS/network blip wedges its poller, so battery telemetry can't silently
 # freeze for ~44h again (incident 2026-07-24 ~19:00). #214 adds a second
 # freeze-mode detector — FRESH all-zeros (incident 2026-07-26) — that the
 # `last_reported`-freshness logic below cannot see; it reuses the SAME reload
-# automation, cooldown and retry cap. Companion runbook:
+# automation, cooldown and retry cap. #246 adds an owner-facing escalation:
+# when the auto-heal has SPENT its reload budget (counter cap 4) and telemetry
+# is STILL frozen, a persistent notification tells the owner to power-cycle the
+# battery by hand (reloads can't fix a hardware/cloud outage). It reuses the
+# SAME detectors/counter/cooldown — no new detectors. Companion runbook:
 #   ../bluetti-selfheal.md   (design rationale, apply steps for vesta,
 #                             how to find the config_entry_id, #211 interlock).
 #
@@ -259,21 +263,100 @@ automation:
               #     message: >
               #       Frozen telemetry detected — reloaded the Bluetti integration
               #       (attempt {{ states('counter.bluetti_selfheal_reload_count') }}).
-        # Retry budget exhausted -> stop hammering, escalate to the owner.
-        default:
-          - service: persistent_notification.create
-            data:
-              notification_id: bluetti_selfheal_escalate
-              title: "Bluetti telemetry STILL frozen — manual check needed"
-              message: >
-                Auto-recovery reloaded the Bluetti integration
-                {{ states('counter.bluetti_selfheal_reload_count') }} times and
-                telemetry is still frozen (stale
-                {{ states('binary_sensor.bluetti_telemetry_stale') }} / all-zeros
-                {{ states('binary_sensor.bluetti_telemetry_all_zero') }}). Likely a
-                real Bluetti cloud / network outage (gw.bluettipower.com) rather
-                than a transient blip. Reloads are paused until telemetry recovers.
-                Check the Bluetti integration and the wireless backhaul.
+        # Retry budget exhausted -> stop hammering. No action here: the choose
+        # falls through to a no-op so reloads pause. The owner-facing "power-cycle
+        # the battery" escalation lives in its own automation
+        # (`bluetti_selfheal_notify_stuck`, #246) so it fires exactly once per
+        # episode and can carry an optional one-shot mobile push — instead of the
+        # old inline escalate that re-fired on every ~15-min recheck tick.
+
+  # 1b) Owner escalation (#246): when the auto-heal has SPENT its reload budget
+  #     (counter hit the cap of 4) and telemetry is STILL frozen, tell the owner
+  #     to power-cycle the battery by hand. Reloading the *integration* only ever
+  #     fixes a wedged HA poller; it can do nothing about a battery/firmware hang
+  #     (e.g. the 2026-08-19 firmware crash) or a real Bluetti-cloud outage — for
+  #     those the human has to power-cycle the unit. This is the "auto-heal gave
+  #     up" heads-up the card asks for: actionable, and NOT noise on every lumpy
+  #     poll gap (a transient blip self-heals on reload 1 and never reaches here).
+  #
+  #     Reuses #212/#214's detectors + counter — NO new detector. The condition
+  #     is exactly "reloads exhausted AND still frozen".
+  - id: bluetti_selfheal_notify_stuck
+    alias: "Bluetti self-heal: notify owner to power-cycle when auto-reload exhausted"
+    mode: single
+    trigger:
+      # Primary: the reload budget is spent (counter parked at the cap of 4) and
+      # has stayed there for 5 min — long enough to confirm the 4th reload did
+      # NOT clear the freeze. `for` + the fixed cap mean this edges exactly once
+      # per episode (the counter resets to 0 on recovery), so no re-fire spam.
+      - platform: numeric_state
+        entity_id: counter.bluetti_selfheal_reload_count
+        above: 3
+        for: "00:05:00"
+        id: reload_budget_spent
+      # Backstop: either freeze signature has stayed on continuously for 30 min
+      # (well beyond the ~52-min 4-reload window's first attempts) even if, for
+      # some edge reason, the counter path didn't latch. Still gated by the
+      # "reloads exhausted" condition below so it can't fire early.
+      - platform: state
+        entity_id:
+          - binary_sensor.bluetti_telemetry_stale
+          - binary_sensor.bluetti_telemetry_all_zero
+        to: "on"
+        for: "00:30:00"
+        id: frozen_30min
+    condition:
+      # Auto-heal has spent its budget: counter at the cap (== 4; the reload
+      # action only increments while below 4, so it never climbs past it).
+      - condition: numeric_state
+        entity_id: counter.bluetti_selfheal_reload_count
+        above: 3
+      # ...and telemetry is STILL frozen in either mode.
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: binary_sensor.bluetti_telemetry_stale
+            state: "on"
+          - condition: state
+            entity_id: binary_sensor.bluetti_telemetry_all_zero
+            state: "on"
+    action:
+      # persistent_notification.create ALWAYS works (no host config) and shows in
+      # the HA UI + the companion app's notifications. Stable notification_id so
+      # it updates in place (one card per episode) and the recovery automation
+      # can dismiss it by id.
+      - service: persistent_notification.create
+        data:
+          notification_id: bluetti_telemetry_stuck
+          title: "Bluetti telemetry STUCK — power-cycle the battery"
+          message: >
+            Bluetti telemetry is STILL frozen after the auto-heal spent its whole
+            reload budget ({{ states('counter.bluetti_selfheal_reload_count') }}×
+            integration reloads). Modes now:
+            stale={{ states('binary_sensor.bluetti_telemetry_stale') }},
+            all-zeros={{ states('binary_sensor.bluetti_telemetry_all_zero') }};
+            freshest battery signal age ~{{
+              (state_attr('binary_sensor.bluetti_telemetry_stale',
+                          'freshest_signal_age_seconds') | float(0) / 60) | round(0)
+            }} min. Reloading the integration can't fix a battery/firmware hang or
+            a real Bluetti-cloud outage — POWER-CYCLE the Bluetti battery, then
+            check the Bluetti integration and the wireless backhaul. Auto-reloads
+            are paused until telemetry recovers; this clears automatically once it
+            does.
+      # OPTIONAL one-shot mobile push (#246): persistent_notification above is the
+      # reliable default. To ALSO get a phone push, uncomment this and set your
+      # device's notify service name on vesta. The exact service is host-side and
+      # is NOT wired here (Assist could not confirm a notify.mobile_app_* service
+      # from this repo) — find it on vesta under Developer Tools → Actions, type
+      # `notify.mobile_app_` and read the autocomplete, e.g.
+      # `notify.mobile_app_pixel_8`. This automation edges once per episode, so
+      # the push is one-shot (no repeat spam).
+      # - service: notify.mobile_app_<your_device>
+      #   data:
+      #     title: "Bluetti telemetry STUCK — power-cycle the battery"
+      #     message: >
+      #       Auto-heal exhausted ({{ states('counter.bluetti_selfheal_reload_count') }}×
+      #       reloads) and Bluetti telemetry is still frozen. Power-cycle the battery.
 
   # 2) Recovery: once telemetry is fresh again for 2 min, reset the retry
   #    counter and clear the notifications so the next episode starts clean.
@@ -311,6 +394,13 @@ automation:
       - service: persistent_notification.dismiss
         data:
           notification_id: bluetti_selfheal
+      # #246 "stuck / power-cycle" escalation — clear it once telemetry recovers.
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: bluetti_telemetry_stuck
+      # Legacy inline escalate id (#212). No longer created since #246, but
+      # dismissing it is a harmless no-op and clears any card left on vesta from
+      # before this package was re-applied.
       - service: persistent_notification.dismiss
         data:
           notification_id: bluetti_selfheal_escalate
