@@ -18,7 +18,12 @@
 The raw Bluetti device sensors are provided by the Bluetti integration, not by
 this repo. These remain the physical throughput source and are unaffected:
 
-- `sensor.buzzbrick_ap3002532000565690_grid_input_power` — grid charging power (W)
-- `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power` — AC output power (W)
+- `sensor.office_buzzbrick_ap3002532000565690_grid_input_power` — grid charging power (W)
+- `sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power` — AC output power (W)
+
+> **Renamed 2026-08-27 (#256):** the Bluetti device was moved into the HA
+> **"Office"** area, so these object IDs gained an `office_` prefix (the SoC
+> sensor is now `sensor.office_buzzbrick_battery_level`). The old
+> `sensor.buzzbrick_ap…` / `sensor.ap…_battery_level` IDs now 404.
 
 These feed InfluxDB (see [influxdb-and-recorder.md](../influxdb-and-recorder.md)).
