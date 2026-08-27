@@ -86,10 +86,10 @@ template:
         state: >
           {% set threshold = (states('input_number.bluetti_stale_threshold_minutes') | float(5)) * 60 %}
           {% set signals = [
-            'sensor.buzzbrick_ap3002532000565690_grid_input_power',
-            'sensor.buzzbrick_ap3002532000565690_alternating_current_out_power',
-            'sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power',
-            'sensor.ap3002532000565690_battery_level'
+            'sensor.office_buzzbrick_ap3002532000565690_grid_input_power',
+            'sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power',
+            'sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power',
+            'sensor.office_buzzbrick_battery_level'
           ] %}
           {% set ns = namespace(ages=[]) %}
           {% for e in signals %}
@@ -106,10 +106,10 @@ template:
           # Age of the freshest battery signal, for dashboards / debugging.
           freshest_signal_age_seconds: >
             {% set signals = [
-              'sensor.buzzbrick_ap3002532000565690_grid_input_power',
-              'sensor.buzzbrick_ap3002532000565690_alternating_current_out_power',
-              'sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power',
-              'sensor.ap3002532000565690_battery_level'
+              'sensor.office_buzzbrick_ap3002532000565690_grid_input_power',
+              'sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power',
+              'sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power',
+              'sensor.office_buzzbrick_battery_level'
             ] %}
             {% set ns = namespace(ages=[]) %}
             {% for e in signals %}
@@ -139,9 +139,9 @@ template:
         icon: mdi:battery-off-outline
         state: >
           {% set eps = 0.001 %}
-          {% set soc = 'sensor.ap3002532000565690_battery_level' %}
-          {% set grid = 'sensor.buzzbrick_ap3002532000565690_grid_input_power' %}
-          {% set ac = 'sensor.buzzbrick_ap3002532000565690_alternating_current_out_power' %}
+          {% set soc = 'sensor.office_buzzbrick_battery_level' %}
+          {% set grid = 'sensor.office_buzzbrick_ap3002532000565690_grid_input_power' %}
+          {% set ac = 'sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power' %}
           {% set signals = [soc, grid, ac] %}
           {% set ns = namespace(present=true) %}
           {% for e in signals %}
@@ -160,13 +160,13 @@ template:
           # Raw values of the three conjuncts, for dashboards / debugging. Solar
           # is shown too (context only) but is NOT part of the trigger logic.
           soc_percent: >
-            {{ states('sensor.ap3002532000565690_battery_level') }}
+            {{ states('sensor.office_buzzbrick_battery_level') }}
           grid_input_power_w: >
-            {{ states('sensor.buzzbrick_ap3002532000565690_grid_input_power') }}
+            {{ states('sensor.office_buzzbrick_ap3002532000565690_grid_input_power') }}
           ac_output_power_w: >
-            {{ states('sensor.buzzbrick_ap3002532000565690_alternating_current_out_power') }}
+            {{ states('sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power') }}
           photovoltaics_input_power_w_excluded: >
-            {{ states('sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power') }}
+            {{ states('sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power') }}
 
 # --- Auto-recover + loop guard ----------------------------------------------
 automation:
@@ -243,7 +243,7 @@ automation:
               # host-side config_entry_id (see runbook for the entry_id fallback).
               - service: homeassistant.reload_config_entry
                 target:
-                  entity_id: sensor.ap3002532000565690_battery_level
+                  entity_id: sensor.office_buzzbrick_battery_level
               - service: persistent_notification.create
                 data:
                   notification_id: bluetti_selfheal

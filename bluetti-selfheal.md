@@ -35,10 +35,10 @@ wireless-backhaul fragility) wedged the integration's poller. Its battery
 sensors **froze for ~44h** — **stale-but-present**, they kept their last numeric
 value and **never went `unavailable`**:
 
-- `sensor.ap3002532000565690_battery_level` — SoC (%)
-- `sensor.buzzbrick_ap3002532000565690_grid_input_power` — grid charging power (W)
-- `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power` — AC out (W)
-- `sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power` — PV in (W)
+- `sensor.office_buzzbrick_battery_level` — SoC (%)
+- `sensor.office_buzzbrick_ap3002532000565690_grid_input_power` — grid charging power (W)
+- `sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power` — AC out (W)
+- `sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power` — PV in (W)
 
 **DNS itself was healthy** (coredns-lab `.180` forwards and resolves
 `gw.bluettipower.com` fine) — this is **not** a DNS fix. The integration cached a
@@ -52,10 +52,10 @@ On **2026-07-26** the same cloud integration failed a *different* way. It kept
 polling normally — the coordinator re-reported every ~13 s, so `last_reported`
 advanced continuously — but every reported value was **exactly 0 at once**:
 
-- `sensor.ap3002532000565690_battery_level` (SoC) = 0
-- `sensor.buzzbrick_ap3002532000565690_grid_input_power` = 0
-- `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power` = 0
-- `sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power` = 0
+- `sensor.office_buzzbrick_battery_level` (SoC) = 0
+- `sensor.office_buzzbrick_ap3002532000565690_grid_input_power` = 0
+- `sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power` = 0
+- `sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power` = 0
 
 This is **fresh-but-wrong**, the mirror of the §1 stale-but-present freeze:
 
@@ -117,13 +117,13 @@ steady-value stretch — but every current build has `last_reported`.
 freshness detector is blind to. It is **value-based**, not time-based:
 
 - It is `on` only when **all three** of SoC
-  (`sensor.ap3002532000565690_battery_level`), grid-in
-  (`sensor.buzzbrick_ap3002532000565690_grid_input_power`) and AC-out
-  (`sensor.buzzbrick_ap3002532000565690_alternating_current_out_power`) are
+  (`sensor.office_buzzbrick_battery_level`), grid-in
+  (`sensor.office_buzzbrick_ap3002532000565690_grid_input_power`) and AC-out
+  (`sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power`) are
   **present** (not `unknown`/`unavailable`) **and** all within a small epsilon
   of 0. If any one is missing, it is `off` (we cannot assert all-zeros).
 - **Solar (PV) is deliberately EXCLUDED** from the conjunction.
-  `sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power` is
+  `sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power` is
   legitimately 0 every night, so requiring it == 0 would not discriminate a
   fault from a normal dusk — it would only add false negatives, never a true
   positive. PV is still exposed as the `photovoltaics_input_power_w_excluded`
@@ -161,7 +161,7 @@ entity**:
 ```yaml
 service: homeassistant.reload_config_entry
 target:
-  entity_id: sensor.ap3002532000565690_battery_level
+  entity_id: sensor.office_buzzbrick_battery_level
 ```
 
 HA resolves that entity → its owning config entry → reloads it. **This needs no
@@ -249,7 +249,7 @@ vesta.
      packages: !include_dir_named packages
    ```
 3. **Verify the four entity IDs** against the live host
-   (Developer Tools → States, filter `ap3002532000565690`). They are copied from
+   (Developer Tools → States, filter `office_buzzbrick`). They are copied from
    the incident report and the existing setup docs, but confirm the exact slugs
    — a wrong slug silently drops that signal from the detector.
 4. **Developer Tools → YAML → Check Configuration**, then **Restart** (or reload
@@ -341,17 +341,27 @@ detector stands alone; the webhook is purely additive.
 The **2026-08-19 Bluetti firmware crash + integration reload** raised the worry
 that HA could have re-created the Bluetti entities under **new IDs**, which would
 silently break both these detectors and the jupiter-lar reads. #246 re-checked
-the IDs.
+the IDs and found them unchanged by that crash.
 
-**Configured Bluetti / battery entity IDs (unchanged — still the ones this
-package and the lar use):**
+> **UPDATE 2026-08-27 (#256): the entity IDs DID change — but from a later,
+> unrelated cause.** The BuzzBrick/Apex device was moved into the HA **"Office"**
+> area, which regenerated its sensor object IDs with an `office_` prefix. This is
+> a device-area rename, not the 08-19 crash. The old IDs now 404 "Entity not
+> found". All four references in this package's detectors were repointed to the
+> new names (this card), the lar config was repointed and verified live in gitops
+> #254, and the table below now lists the **current** (post-rename) IDs. The
+> 08-19 read-health evidence further down remains valid for *that* event; it just
+> predates this rename.
+
+**Configured Bluetti / battery entity IDs (current — post 2026-08-27 `office_`
+rename; the ones this package and the lar now use):**
 
 | Role | Entity ID |
 |---|---|
-| SoC | `sensor.ap3002532000565690_battery_level` |
-| grid-in | `sensor.buzzbrick_ap3002532000565690_grid_input_power` |
-| AC-out (house load) | `sensor.buzzbrick_ap3002532000565690_alternating_current_out_power` |
-| PV-in (solar) | `sensor.buzzbrick_ap3002532000565690_photovoltaics_input_power` |
+| SoC | `sensor.office_buzzbrick_battery_level` |
+| grid-in | `sensor.office_buzzbrick_ap3002532000565690_grid_input_power` |
+| AC-out (house load) | `sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power` |
+| PV-in (solar) | `sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power` |
 | working-mode control | `select.apex300_working_mode` |
 | whole-home import | `sensor.utility_room_home_energy_meter_electric_consumption_w` |
 | capacity peak (Fluvius) | `sensor.fluvius_meter_1sag1100121989_peak_power` |
@@ -378,7 +388,7 @@ security classifier). So this verification rests on the **indirect** read-health
 evidence above, which is strong but not a per-entity string match.
 
 **Owner spot-check (2 min, do once):** Developer Tools → States, filter
-`ap3002532000565690` and confirm the four Bluetti IDs above still exist; then
+`office_buzzbrick` and confirm the four Bluetti IDs above still exist; then
 confirm `select.apex300_working_mode`,
 `sensor.utility_room_home_energy_meter_electric_consumption_w`,
 `sensor.fluvius_meter_1sag1100121989_peak_power` and `sensor.office_a_c_power`.
