@@ -120,13 +120,14 @@ This repo does **not** sync to vesta. Apply by hand:
 The package assumes:
 
 - `switch.pomona_pump`
-- `switch.pomona_lamps`
+- `switch.office_pomona_lamps` — NOT the standard slug for "Pomona Lamps":
+  the entity was created as `office_pomena_lamps` and the #255/#256 typo fix
+  renamed it to `office_pomona_lamps`, keeping the `office_` prefix. Verified
+  against live HA 2026-08-31.
 
-Those are the standard slugs for the friendly names **Pomona Pump** and
-**Pomona Lamps** as they appear in HA today, but a renamed entity keeps its
-original slug. If either is wrong, **the automations fail silently** — no
-error, just a pump that never cycles. Check Developer Tools → States and
-correct the package.
+A renamed entity keeps its slug even when the friendly name changes. If either
+is wrong, **the automations fail silently** — no error, just a pump that never
+cycles. Check Developer Tools → States and correct the package.
 
 ## Level awareness — what the probe can and cannot do
 

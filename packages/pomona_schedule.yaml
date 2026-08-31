@@ -216,7 +216,7 @@ automation:
     action:
       - service: switch.turn_on
         target:
-          entity_id: switch.pomona_lamps
+          entity_id: switch.office_pomona_lamps
 
   - id: pomona_light_on
     alias: Pomona light ON 08:00
@@ -236,7 +236,7 @@ automation:
     action:
       - service: switch.turn_on
         target:
-          entity_id: switch.pomona_lamps
+          entity_id: switch.office_pomona_lamps
 
   - id: pomona_light_off
     alias: Pomona light OFF 20:00
@@ -256,7 +256,7 @@ automation:
     action:
       - service: switch.turn_off
         target:
-          entity_id: switch.pomona_lamps
+          entity_id: switch.office_pomona_lamps
 
   - id: pomona_light_off_failsafe
     alias: Pomona light OFF failsafe (23:00)
@@ -270,12 +270,12 @@ automation:
         at: "23:00:00"
     condition:
       - condition: state
-        entity_id: switch.pomona_lamps
+        entity_id: switch.office_pomona_lamps
         state: "on"
     action:
       - service: switch.turn_off
         target:
-          entity_id: switch.pomona_lamps
+          entity_id: switch.office_pomona_lamps
 
   # -------------------------------------------------------------------------
   # FIRMWARE IN COMMAND — event -> HA -> Fibaro
@@ -350,14 +350,14 @@ automation:
             sequence:
               - service: switch.turn_on
                 target:
-                  entity_id: switch.pomona_lamps
+                  entity_id: switch.office_pomona_lamps
           - conditions:
               - condition: template
                 value_template: "{{ trigger.payload | lower == 'off' }}"
             sequence:
               - service: switch.turn_off
                 target:
-                  entity_id: switch.pomona_lamps
+                  entity_id: switch.office_pomona_lamps
 
   - id: pomona_command_handover
     alias: Pomona — control handed back to HA
