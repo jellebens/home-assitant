@@ -103,11 +103,39 @@ What is implemented instead:
 | 0 points for **24 h** | `binary_sensor.pomona_level_critically_low` turns on and **inhibits the pump**. No longer "time to top up" but "nobody topped up and this tank may be running out". |
 | Sensor unknown / unit offline | **Fails open — the pump keeps running**, plus an offline notification. Over any 24 h window, plants dying of no water is a near certainty while an unnoticed empty tank is not, and the reservoir drains over days rather than hours. |
 
-**The real fix is mechanical, not software.** Remount the probe — or add a
-second one — at **pump-intake height**, with point 1 just above the intake, so
-that 0/4 genuinely means "stop the pump now". The pomona repo's
-`docs/sensors/level-probe.md` names both mounting options; the top-up mount was
-chosen before there was a pump interlock to serve.
+### The settle check — believing a 0 only after the water has settled
+
+Remounting the probe at pump-intake height was the clean fix, and it is **not
+possible** — the tank geometry does not allow it. So the compensating control
+is in software.
+
+A raw 0 read *while the pump is running* is not even a trustworthy "below
+8.2 L". An aeroponic tower holds a real volume **in transit** — in the riser,
+the drip line and the six tiers — so the reservoir sits visibly lower during a
+cycle than the total water justifies, and turbulence at the optical tips adds
+flicker on top. That is exactly why the raw signal was unusable as an interlock.
+
+So on a sustained raw 0, HA now:
+
+1. **stops the pump**, so the tower drains back and the surface stills;
+2. **waits 5 minutes** — comfortably longer than the drain-back, and costing at
+   most one skipped 15-minute cycle;
+3. **re-reads and decides**:
+   - **recovered (≥ 1 point)** → it was water in transit. Clear the flag,
+     resume, say nothing.
+   - **still 0** → this is a reading worth acting on. Notify to top up, and set
+     `input_boolean.pomona_level_confirmed_low`.
+   - **sensor unknown** → unknown is not empty. Resume, leave the flag alone.
+
+Rate-limited to one check per hour so it cannot thrash the pump.
+
+The 24 h pump inhibit is now keyed off the **settled verdict** rather than the
+raw probe, so in-transit water can never trip it.
+
+**What this still cannot do:** detect an empty tank. Nothing mounted at the
+8.2 L line can see below it. What it does do is turn the one honest low signal
+available into a reliable one, and stop the pump the moment that signal is
+confirmed.
 
 ### Prerequisite for the telemetry package
 

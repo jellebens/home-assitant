@@ -19,6 +19,14 @@
 # the device credentials.
 #
 # ---------------------------------------------------------------------------
+# THE PROBE CANNOT BE REMOUNTED LOWER
+#
+# Moving it to pump-intake height was the clean fix for real dry-run
+# protection; the tank geometry does not allow it. The compensating control is
+# the SETTLE CHECK further down: stop the pump, let the tower drain back, and
+# only then believe a 0 reading.
+#
+# ---------------------------------------------------------------------------
 # WHY STATE, NOT AN "EVENT"
 #
 # The obvious framing is "have the Arduino push an event when the water is
@@ -127,63 +135,139 @@ mqtt:
       # Retained + LWT, so this is trustworthy across HA restarts and is what
       # every other Pomona sensor keys its availability off.
 
+input_boolean:
+  pomona_level_confirmed_low:
+    name: Pomona level confirmed low (settled reading)
+    icon: mdi:water-alert
+    # Set ONLY by the settle check below. A raw 0 from the probe is not
+    # trustworthy while the pump is running; this is the verdict after the
+    # water has been allowed to settle.
+
 template:
   - binary_sensor:
       - name: Pomona level critically low
         unique_id: pomona_level_critically_low
         device_class: problem
-        icon: mdi:water-alert
+        icon: mdi:water-off
         # The pump interlock. NOT the same thing as "time to top up".
         #
-        # 0 points means "below the 8.2 L waterline", which happens routinely
-        # between top-ups and is not an emergency — the refill notification
-        # handles that. This turns on only after the level has read 0
-        # CONTINUOUSLY FOR 24 HOURS, which means nobody topped up and the tank
-        # may genuinely be running out. Below 8.2 L the probe is blind, so this
-        # is inference, not measurement.
+        # Keyed off the SETTLED verdict, not the raw probe, so in-transit water
+        # can never trip it. Turns on only after the settled reading has stayed
+        # low for 24 h, which means nobody topped up and the tank may genuinely
+        # be running out. The probe is blind below 8.2 L, so this remains
+        # inference rather than measurement.
         #
-        # FAILS OPEN by construction: `is_state(...,'0')` is false when the
-        # sensor is unknown or unavailable, so a dead sensor or an offline unit
-        # leaves the pump running rather than silently stopping irrigation.
+        # FAILS OPEN: an unknown or unavailable sensor never sets the confirmed
+        # -low flag, so a dead probe or an offline unit leaves the pump running
+        # rather than silently stopping irrigation.
         state: >-
-          {{ is_state('sensor.pomona_water_level_points', '0') }}
+          {{ is_state('input_boolean.pomona_level_confirmed_low', 'on') }}
         delay_on: "24:00:00"
         delay_off: "00:05:00"
 
 automation:
   # -------------------------------------------------------------------------
-  # REFILL ALERT — a notification, deliberately NOT a pump cutoff.
+  # SETTLE CHECK — stop, let the water come back, then believe the reading.
   #
-  # 0/4 means "below 8.2 L", which in a 10 L tank is a top-up prompt, not an
-  # emergency. It will read 0 routinely between top-ups. Cutting irrigation
-  # every time the owner is a day late would kill the plants far more reliably
-  # than the dry-run it is meant to prevent.
+  # The probe cannot be remounted lower (the tank geometry does not allow it),
+  # so 0 points still only means "below the 8.2 L waterline". But a raw 0 read
+  # DURING a pump cycle is not even that: an aeroponic tower holds a real
+  # volume in transit — in the riser, the drip line and the tiers — so the
+  # reservoir sits visibly lower while the pump runs than the total water
+  # justifies. Turbulence at the tips adds flicker on top.
+  #
+  # So: on a raw 0, stop the pump, wait for the tower to drain back and the
+  # surface to still, then read again.
+  #   * recovered (>= 1 point) -> in-transit water, false alarm, resume.
+  #   * still 0                -> a reading worth acting on. Notify, and set
+  #                               the confirmed-low flag that the 24 h pump
+  #                               inhibit is keyed off.
+  #
+  # This is the compensating control for not being able to move the probe. It
+  # cannot detect an empty tank (nothing below 8.2 L can), but it stops the
+  # pump on the only honest low signal available and it removes the false
+  # positives that made the raw signal unusable.
   # -------------------------------------------------------------------------
-  - id: pomona_refill_alert
-    alias: Pomona — reservoir needs topping up
+  - id: pomona_level_settle_check
+    alias: Pomona — level settle check
     description: >-
-      Fires when the level ladder has read 0 points for 30 minutes, i.e. the
-      tank is below the 8.2 L waterline. Debounced so pump turbulence and the
-      moment of a top-up cannot flap it.
+      On a sustained raw 0, cut the pump, let the tower drain back for 5
+      minutes, then re-read and decide. Rate-limited to once an hour so it
+      cannot thrash the pump.
     mode: single
+    max_exceeded: silent
     trigger:
       - platform: numeric_state
         entity_id: sensor.pomona_water_level_points
         below: 1
-        for: "00:30:00"
+        for: "00:02:00"
+    condition:
+      # Rate limit: at most one settle check per hour.
+      - condition: template
+        value_template: >-
+          {{ state_attr('automation.pomona_level_settle_check', 'last_triggered') is none
+             or (now() - state_attr('automation.pomona_level_settle_check', 'last_triggered')).total_seconds() > 3600 }}
     action:
-      - service: persistent_notification.create
-        data:
-          title: Pomona — top up the reservoir
-          message: >-
-            Water level has been below the 8.2 L line for 30 minutes. Top up
-            with plain demineralised water, then re-check EC — evaporation
-            concentrates the solution and a top-up dilutes it.
-          notification_id: pomona_refill
+      # 1. Stop the pump so the tower drains back and the surface stills.
+      - service: switch.turn_off
+        target:
+          entity_id: switch.pomona_pump
+      # 2. Let it settle. 5 min is comfortably longer than the tower takes to
+      #    drain back, and costs at most one skipped 15-minute cycle.
+      - delay: "00:05:00"
+      # 3. Re-read and decide.
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.pomona_water_level_points
+                above: 0
+            sequence:
+              # Recovered: it was water in transit, not a low tank.
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.pomona_level_confirmed_low
+              - service: persistent_notification.dismiss
+                data:
+                  notification_id: pomona_refill
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.pomona_pump
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.pomona_water_level_points
+                below: 1
+            sequence:
+              # Settled and still low: a reading worth acting on.
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.pomona_level_confirmed_low
+              - service: persistent_notification.create
+                data:
+                  title: Pomona — top up the reservoir
+                  message: >-
+                    The level read 0 points, the pump was stopped and after 5
+                    minutes of settling it is still 0 — so this is not water in
+                    transit, the tank really is below the 8.2 L line. Top up
+                    with plain demineralised water, then re-check EC:
+                    evaporation concentrates the solution and a top-up dilutes
+                    it. The pump keeps running on schedule for now; it is only
+                    inhibited if this stays low for 24 h.
+                  notification_id: pomona_refill
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.pomona_pump
+        default:
+          # Sensor went unknown/unavailable mid-check. Unknown is not empty —
+          # resume pumping and leave the confirmed-low flag alone.
+          - service: switch.turn_on
+            target:
+              entity_id: switch.pomona_pump
 
   - id: pomona_refill_cleared
     alias: Pomona — reservoir refilled
-    description: Clears the refill notification once the level is back in band.
+    description: >-
+      Clears the confirmed-low flag and the notification as soon as the level
+      is genuinely back in band, without waiting for another settle check.
     mode: single
     trigger:
       - platform: numeric_state
@@ -191,6 +275,9 @@ automation:
         above: 0
         for: "00:05:00"
     action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.pomona_level_confirmed_low
       - service: persistent_notification.dismiss
         data:
           notification_id: pomona_refill
