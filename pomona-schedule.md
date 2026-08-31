@@ -40,6 +40,66 @@ and want shade for the first few days. 14 h is the steady-state target for
 fruiting crops indoors. The dark period is **not** optional — never run these
 lamps 24 h.
 
+## Firmware in command — event → HA → Fibaro
+
+The GIGA can take over the deciding, with HA reduced to relaying its requests
+to the Fibaro plugs. This is the first half of the target architecture in the
+pomona repo's `docs/control-architecture.md` (Trello **#260**): the decision
+moves to the device that actually holds the sensors, while actuation stays in
+certified smart plugs and **no mains wiring is touched**.
+
+### The contract
+
+Must match the firmware and the pomona repo's `docs/mqtt.md`:
+
+| Topic | Payload | Retained |
+|---|---|---|
+| `pomona/pump/request` | `on` / `off` | **yes**, QoS 1 |
+| `pomona/light/request` | `on` / `off` | **yes**, QoS 1 |
+| `pomona/pump/reason` | free text — why the last request was made | yes |
+
+**Retained is load-bearing.** On an HA restart the broker replays the current
+request immediately, so HA does not sit with the plugs in a stale state waiting
+for the next firmware decision.
+
+### Exactly one controller at a time
+
+`binary_sensor.pomona_firmware_in_command` decides who is driving, and it is on
+only when the firmware is **both enabled and reachable**:
+
+```
+firmware_in_command = input_boolean.pomona_firmware_control (on)
+                      AND binary_sensor.pomona_unit_online (on)
+```
+
+Every HA scheduling automation now stands down while that is on, and the two
+`follow firmware request` automations only act while it is on. There is no
+window where both are driving.
+
+### The fallback is the point
+
+A GIGA that crashes, wedges, or goes out for an OTA **hands the schedule
+straight back to HA**, and a notification says so. Without that, a dead unit
+would freeze the pump in whatever state it last requested — which is why the HA
+schedule is *kept* at cutover rather than deleted. Firmware control resumes by
+itself when the unit comes back.
+
+The HA-side sustained-low inhibit also stays in place as a second opinion on
+pump-on requests. The firmware owns the interlock once it has one, but a
+tested second check costs nothing.
+
+### Cutting over, and rolling back
+
+1. Flash firmware that publishes `pomona/pump/request` and
+   `pomona/light/request`. **Do this first** — the switch below does nothing
+   useful until something is publishing.
+2. Watch the topics with a broker client and confirm the requests look sane
+   against the schedule you expect.
+3. Turn **`input_boolean.pomona_firmware_control` ON**. HA stands down and
+   starts relaying.
+4. **Rollback is one click**: turn it back off and the HA schedule resumes
+   immediately.
+
 ## Applying it
 
 This repo does **not** sync to vesta. Apply by hand:
