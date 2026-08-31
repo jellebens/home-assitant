@@ -1,0 +1,217 @@
+# Pomona tower — telemetry into Home Assistant over MQTT
+# ===========================================================================
+# The GIGA already pushes everything needed. It publishes `pomona/<zone>/<metric>`
+# to the shared EMQX broker (mqtt.lab.local:1883) every 30 s, with a retained
+# `pomona/unit/status` backed by an MQTT Last Will. **No firmware change is
+# required** — HA simply was not subscribing. This package subscribes.
+#
+# Until now the tower telemetry went MQTT -> Telegraf -> InfluxDB -> Grafana
+# and never touched HA, which is why the pump schedule had no level awareness.
+#
+# Companion runbook: ../pomona-schedule.md
+# Topic schema of record: pomona repo `docs/mqtt.md`
+#
+# ---------------------------------------------------------------------------
+# PREREQUISITE: the MQTT integration must be configured on this HA instance,
+# pointed at mqtt.lab.local:1883 with credentials that can SUBSCRIBE to
+# `pomona/#`. The EMQX `pomona` account is ACL-limited to that prefix and is
+# the unit's own publisher account — give HA its own user rather than sharing
+# the device credentials.
+#
+# ---------------------------------------------------------------------------
+# WHY STATE, NOT AN "EVENT"
+#
+# The obvious framing is "have the Arduino push an event when the water is
+# low". Retained/periodic STATE is strictly better for an interlock: an event
+# fires once, and anything that misses it — HA restarting, a dropped QoS-0
+# message, a broker blip — leaves the pump unguarded with no way to notice.
+# Periodic state plus an LWT means HA always knows both the current value and
+# whether the reading can be trusted at all. Events are for notifying humans;
+# state is for interlocks.
+#
+# Metrics are published NON-retained (see docs/mqtt.md), so after an HA restart
+# each sensor is unknown for up to 30 s until the next publish. That is fine.
+# What matters is `availability_topic`: the retained `pomona/unit/status` plus
+# the broker LWT means a crashed or unplugged unit marks every sensor
+# unavailable rather than leaving HA acting on a stale number.
+# ===========================================================================
+
+mqtt:
+  sensor:
+    - name: Pomona water level points
+      unique_id: pomona_water_level_points
+      state_topic: pomona/water/level_points
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      unit_of_measurement: pts
+      icon: mdi:water-percent
+      # CQRSENYW003 ladder, 0-4. Mounted as a TOP-UP GAUGE, not a dry-run
+      # sensor: point 1 wets at 8.2 L, point 3 at 9.7 L. 0 means "below
+      # 8.2 L", and the probe is BLIND below that line - it cannot tell 8 L
+      # from empty. Read the levels table in the pomona repo's
+      # docs/sensors/level-probe.md before writing any rule against this.
+
+    - name: Pomona water temperature
+      unique_id: pomona_water_temp_c
+      state_topic: pomona/water/temp_c
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      device_class: temperature
+      unit_of_measurement: "°C"
+      state_class: measurement
+
+    - name: Pomona EC
+      unique_id: pomona_water_ec_ms_cm
+      state_topic: pomona/water/ec_ms_cm
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      unit_of_measurement: mS/cm
+      state_class: measurement
+      icon: mdi:flash
+      # Target while the tower establishes: 0.8-1.0, ramping to the shared
+      # 1.4-1.6 over 2-3 weeks. Analog sensor with no absence detection -
+      # reads ~0 when unplugged rather than going unavailable.
+
+    - name: Pomona pH
+      unique_id: pomona_water_ph
+      state_topic: pomona/water/ph
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      state_class: measurement
+      icon: mdi:ph
+      # Target ~6.0 (window 5.8-6.2). Only published once calibrated.
+
+    - name: Pomona air temperature
+      unique_id: pomona_air_temp_c
+      state_topic: pomona/air/temp_c
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      device_class: temperature
+      unit_of_measurement: "°C"
+      state_class: measurement
+
+    - name: Pomona air humidity
+      unique_id: pomona_air_humidity_pct
+      state_topic: pomona/air/humidity_pct
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      device_class: humidity
+      unit_of_measurement: "%"
+      state_class: measurement
+
+    - name: Pomona lux
+      unique_id: pomona_air_lux
+      state_topic: pomona/air/lux
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      device_class: illuminance
+      unit_of_measurement: lx
+      state_class: measurement
+      # Canopy target is >= 10 klx while the lamps are on. If the lamps
+      # cannot reach it, more HOURS will not substitute for intensity.
+
+  binary_sensor:
+    - name: Pomona unit online
+      unique_id: pomona_unit_online
+      state_topic: pomona/unit/status
+      payload_on: online
+      payload_off: offline
+      device_class: connectivity
+      # Retained + LWT, so this is trustworthy across HA restarts and is what
+      # every other Pomona sensor keys its availability off.
+
+template:
+  - binary_sensor:
+      - name: Pomona level critically low
+        unique_id: pomona_level_critically_low
+        device_class: problem
+        icon: mdi:water-alert
+        # The pump interlock. NOT the same thing as "time to top up".
+        #
+        # 0 points means "below the 8.2 L waterline", which happens routinely
+        # between top-ups and is not an emergency — the refill notification
+        # handles that. This turns on only after the level has read 0
+        # CONTINUOUSLY FOR 24 HOURS, which means nobody topped up and the tank
+        # may genuinely be running out. Below 8.2 L the probe is blind, so this
+        # is inference, not measurement.
+        #
+        # FAILS OPEN by construction: `is_state(...,'0')` is false when the
+        # sensor is unknown or unavailable, so a dead sensor or an offline unit
+        # leaves the pump running rather than silently stopping irrigation.
+        state: >-
+          {{ is_state('sensor.pomona_water_level_points', '0') }}
+        delay_on: "24:00:00"
+        delay_off: "00:05:00"
+
+automation:
+  # -------------------------------------------------------------------------
+  # REFILL ALERT — a notification, deliberately NOT a pump cutoff.
+  #
+  # 0/4 means "below 8.2 L", which in a 10 L tank is a top-up prompt, not an
+  # emergency. It will read 0 routinely between top-ups. Cutting irrigation
+  # every time the owner is a day late would kill the plants far more reliably
+  # than the dry-run it is meant to prevent.
+  # -------------------------------------------------------------------------
+  - id: pomona_refill_alert
+    alias: Pomona — reservoir needs topping up
+    description: >-
+      Fires when the level ladder has read 0 points for 30 minutes, i.e. the
+      tank is below the 8.2 L waterline. Debounced so pump turbulence and the
+      moment of a top-up cannot flap it.
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.pomona_water_level_points
+        below: 1
+        for: "00:30:00"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Pomona — top up the reservoir
+          message: >-
+            Water level has been below the 8.2 L line for 30 minutes. Top up
+            with plain demineralised water, then re-check EC — evaporation
+            concentrates the solution and a top-up dilutes it.
+          notification_id: pomona_refill
+
+  - id: pomona_refill_cleared
+    alias: Pomona — reservoir refilled
+    description: Clears the refill notification once the level is back in band.
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.pomona_water_level_points
+        above: 0
+        for: "00:05:00"
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: pomona_refill
+
+  - id: pomona_unit_offline_alert
+    alias: Pomona — unit offline
+    description: >-
+      The tower has no level awareness while the GIGA is down, so the pump
+      schedule is running blind. Worth knowing about.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.pomona_unit_online
+        to: "off"
+        for: "00:15:00"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Pomona — unit offline
+          message: >-
+            The GIGA has been offline for 15 minutes. The pump and light
+            schedules keep running, but with no level or EC readings — check
+            the reservoir by hand until it is back.
+          notification_id: pomona_unit_offline

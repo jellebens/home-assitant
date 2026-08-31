@@ -1,6 +1,9 @@
 # Pomona — pump and grow-light scheduling (runbook)
 
-Companion to [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml).
+Companion to [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml)
+(pump + light scheduling) and
+[packages/pomona_telemetry.yaml](packages/pomona_telemetry.yaml)
+(tower telemetry into HA over MQTT, and the level interlock).
 
 The Pomona tower was planted on **2026-08-31** (18 of 30 pods: 9 alpine
 strawberry, 4 paprika, 3 Dulce Italiano, 2 chili — see the pomona repo's
@@ -65,28 +68,54 @@ original slug. If either is wrong, **the automations fail silently** — no
 error, just a pump that never cycles. Check Developer Tools → States and
 correct the package.
 
-## ⚠ Known gap: no dry-run protection
+## Level awareness — what the probe can and cannot do
 
-**A submersible pump run dry burns out.** The tower has a calibrated level
-probe, but its readings travel MQTT → Telegraf → InfluxDB → Grafana and never
-reach Home Assistant, so there is no entity to condition the pump on. These
-schedules will run the pump into an empty reservoir without complaint.
+The GIGA already pushes everything needed, so **no firmware change was
+required**: it publishes `pomona/<zone>/<metric>` to `mqtt.lab.local:1883`
+every 30 s with a retained `pomona/unit/status` backed by an MQTT Last Will.
+HA simply was not subscribing. [packages/pomona_telemetry.yaml](packages/pomona_telemetry.yaml)
+subscribes, and the pump schedule now has level awareness.
 
-Until that is closed, **watch the reservoir level by hand** — the tower holds
-7.5 L and 18 plants will draw it down noticeably once established.
+**Why state rather than an event.** The intuitive design is "have the Arduino
+push an event when the water gets low". Periodic state is strictly better for
+an interlock: an event fires once, and anything that misses it — an HA restart,
+a dropped QoS-0 message, a broker blip — leaves the pump unguarded with no way
+to notice. Periodic state plus an LWT means HA always knows both the current
+value *and* whether the reading can be trusted. Events are for notifying
+humans; state is for interlocks.
 
-The fix is small and worth doing: expose the pomona water level to HA as an
-MQTT sensor against the same broker the GIGA already publishes to
-(`mqtt.lab.local:1883`, topic `pomona/water/...`), then add a condition to both
-pump-ON automations:
+### ⚠ This is still not true dry-run protection
 
-```yaml
-      - condition: numeric_state
-        entity_id: sensor.pomona_water_level
-        above: <low-level threshold>
-```
+The CQRSENYW003 is mounted as a **top-up gauge**: point 1 wets at 8.2 L, point
+3 at 9.7 L. A reading of **0 points means "below 8.2 L", and the probe is blind
+below that line** — it cannot tell 8 L from empty.
 
-and an alert when it trips. Worth its own card.
+So cutting the pump at 0 points would be wrong twice over. It would stop
+irrigation at a perfectly healthy ~8 L, and it would fire routinely between
+top-ups. Killing the watering every time a top-up is a day late would destroy
+the crop far more reliably than the dry-run it was meant to prevent.
+
+What is implemented instead:
+
+| Signal | Behaviour |
+|---|---|
+| 0 points for 30 min | **Refill notification.** A prompt, not a cutoff. |
+| 0 points for **24 h** | `binary_sensor.pomona_level_critically_low` turns on and **inhibits the pump**. No longer "time to top up" but "nobody topped up and this tank may be running out". |
+| Sensor unknown / unit offline | **Fails open — the pump keeps running**, plus an offline notification. Over any 24 h window, plants dying of no water is a near certainty while an unnoticed empty tank is not, and the reservoir drains over days rather than hours. |
+
+**The real fix is mechanical, not software.** Remount the probe — or add a
+second one — at **pump-intake height**, with point 1 just above the intake, so
+that 0/4 genuinely means "stop the pump now". The pomona repo's
+`docs/sensors/level-probe.md` names both mounting options; the top-up mount was
+chosen before there was a pump interlock to serve.
+
+### Prerequisite for the telemetry package
+
+The **MQTT integration must be configured** on this HA instance against
+`mqtt.lab.local:1883`, with credentials allowed to subscribe to `pomona/#`.
+The EMQX `pomona` account is the unit's own publisher credential and is
+ACL-limited to that prefix — give HA its own user rather than sharing the
+device's.
 
 ## Tuning it later
 
