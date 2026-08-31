@@ -1,4 +1,4 @@
-# Bluetti telemetry self-heal — cards #212, #214, #246
+# Bluetti telemetry self-heal — cards #212, #214, #246, #259
 
 Make the Bluetti / buzzbrick **cloud** integration self-recover so a transient
 DNS/network blip can't silently freeze the battery telemetry for ~44h again.
@@ -237,6 +237,45 @@ owner escalation (`bluetti_telemetry_stuck`, §2b) — both always-available, no
 host config. An optional `notify.mobile_app_<device>` push is included
 **commented out** on both — uncomment and set your device's notify service on
 vesta.
+
+## 2c. LAR liveness signal + force-refresh (#259, 2026-08-31)
+
+Two additions that close the **lar idle-deadlock**: the lar (jupiter-cell) reads
+HA over REST `/api/states`, and HA only REWRITES a state object (bumping the
+REST-visible `last_updated`, and — because the REST payload is served from a
+cached dict — the REST-visible `last_reported` too) when the **value changes**.
+An idle battery holds constant values for hours, so over REST the whole feed
+looks frozen; the lar's #211 staleness guard (900 s) then suppressed valid
+charge plans into a passthrough hold, and because holding keeps the values
+constant, the hold never cleared (deadlock; incidents 2026-08-30/31).
+
+**`binary_sensor.bluetti_integration_alive`** — the HA-side liveness verdict the
+lar consumes (jupiter ≥ 0.18.4, `ha.battery_liveness_entity`): `on` ⇔ NOT stale
+(§2) AND NOT all-zero (§2a); `off` on any freeze or when a detector is itself
+unknown/unavailable (strict positive confirmation — the lar keeps its hold on
+any doubt). Because the §2 stale detector computes `last_reported` age in a
+**template** (the template engine sees the true ~13 s heartbeat REST hides),
+this sensor genuinely discriminates idle-but-live from dead. Its `heartbeat`
+attribute is `now()`-driven and changes every minute **on purpose**: the lar's
+`battery_liveness_max_age_seconds` gate (300 s) reads THIS entity's REST
+`last_updated`, which would itself freeze while the sensor sits constant `on` —
+the churning attribute forces a fresh state write ~every 60 s so the gate
+passes while HA's template engine is healthy, and refuses (hold stands) if the
+engine wedges. Do not remove it.
+
+**`bluetti_force_refresh_values`** (automation) — the blunt instrument (owner,
+2026-08-31): every 5 min, if the freshest battery entity's REST value has sat
+unchanged **> 10 min** (well under the lar's 900 s guard), reload the Bluetti
+config entry. A reload recreates the entities ⇒ fresh state writes ⇒ fresh REST
+timestamps — so the lar guard can never trip on idle, dashboards stay current,
+and a genuinely wedged poller gets kicked as a bonus. Post-reload the ages
+reset, which is the cooldown (~1 reload / 10 idle minutes max). All-unavailable
+(hard-down) is deliberately excluded — that stays §2's capped episode logic.
+
+Defense-in-depth order on the lar side (gitops `jupiter-tervuren/values.yaml`):
+force-refresh keeps REST fresh → liveness override clears a false stale →
+`battery_stale_max_hold_seconds` (interim blind timer, revert to 0 once the
+above two are proven) → #211 hold as the final safety.
 
 ## 3. Apply on vesta (owner step — live-prod, not done by the agent)
 
