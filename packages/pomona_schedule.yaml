@@ -85,6 +85,31 @@ input_boolean:
     # ON = the wetter, gentler first-fortnight schedule. Transplanted
     # 2026-08-31, so turn this OFF around 2026-09-14.
 
+  pomona_firmware_control:
+    name: Pomona firmware control
+    icon: mdi:chip
+    # OFF = HA owns the schedule (the automations below).
+    # ON  = the GIGA owns it; HA just relays its requests to the plugs.
+    #
+    # This is the cutover switch, and it is reversible in one click. Turn it
+    # on when the firmware starts publishing pomona/pump/request; turn it off
+    # and HA resumes its own schedule immediately.
+
+template:
+  - binary_sensor:
+      - name: Pomona firmware in command
+        unique_id: pomona_firmware_in_command
+        icon: mdi:chip
+        # Exactly one controller may be active at a time, and this decides
+        # which. The firmware is in command only while it is BOTH enabled AND
+        # reachable — so a GIGA that crashes, wedges or is mid-OTA hands the
+        # schedule straight back to HA rather than freezing the pump in
+        # whatever state it last asked for. That fallback is the whole reason
+        # the HA schedule is kept rather than deleted at cutover.
+        state: >-
+          {{ is_state('input_boolean.pomona_firmware_control', 'on')
+             and is_state('binary_sensor.pomona_unit_online', 'on') }}
+
 automation:
   # -------------------------------------------------------------------------
   # PUMP
@@ -100,6 +125,10 @@ automation:
       - platform: time_pattern
         minutes: "0"
     condition:
+      # Stand down while the firmware is in command.
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "off"
       - condition: or
         conditions:
           - condition: state
@@ -129,6 +158,10 @@ automation:
       - platform: time_pattern
         minutes: "30"
     condition:
+      # Stand down while the firmware is in command.
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "off"
       - condition: state
         entity_id: input_boolean.pomona_establishment
         state: "on"
@@ -152,6 +185,11 @@ automation:
         minutes: "15"
       - platform: time_pattern
         minutes: "45"
+    condition:
+      # Stand down while the firmware is in command.
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "off"
     action:
       - service: switch.turn_off
         target:
@@ -168,6 +206,10 @@ automation:
       - platform: time
         at: "06:00:00"
     condition:
+      # Stand down while the firmware is in command.
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "off"
       - condition: state
         entity_id: input_boolean.pomona_establishment
         state: "off"
@@ -186,6 +228,11 @@ automation:
     trigger:
       - platform: time
         at: "08:00:00"
+    condition:
+      # Stand down while the firmware is in command.
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "off"
     action:
       - service: switch.turn_on
         target:
@@ -201,6 +248,11 @@ automation:
     trigger:
       - platform: time
         at: "20:00:00"
+    condition:
+      # Stand down while the firmware is in command.
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "off"
     action:
       - service: switch.turn_off
         target:
@@ -224,3 +276,113 @@ automation:
       - service: switch.turn_off
         target:
           entity_id: switch.pomona_lamps
+
+  # -------------------------------------------------------------------------
+  # FIRMWARE IN COMMAND — event -> HA -> Fibaro
+  #
+  # The GIGA decides and publishes what it wants; HA is only the relay to the
+  # plugs. This is the first half of the target architecture in the pomona
+  # repo's docs/control-architecture.md (Trello #260) — the decision moves to
+  # the device that holds the sensors, while actuation stays in certified
+  # smart plugs and no mains wiring is touched.
+  #
+  # CONTRACT (must match firmware and docs/mqtt.md):
+  #   pomona/pump/request   "on" | "off"   RETAINED, QoS 1
+  #   pomona/light/request  "on" | "off"   RETAINED, QoS 1
+  #   pomona/pump/reason    free text, why the last request was made
+  #
+  # RETAINED is load-bearing: on an HA restart the broker replays the current
+  # request immediately, so HA does not sit with the plugs in a stale state
+  # waiting for the next firmware decision.
+  # -------------------------------------------------------------------------
+  - id: pomona_pump_follow_firmware
+    alias: Pomona pump — follow firmware request
+    description: Relays pomona/pump/request onto the Fibaro plug.
+    mode: queued
+    max: 10
+    trigger:
+      - platform: mqtt
+        topic: pomona/pump/request
+    condition:
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "on"
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.payload | lower == 'on' }}"
+            sequence:
+              # The HA-side sustained-low inhibit stays as belt and braces.
+              # The firmware owns the interlock, but a second opinion costs
+              # nothing and this one has already been tested.
+              - condition: state
+                entity_id: binary_sensor.pomona_level_critically_low
+                state: "off"
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.pomona_pump
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.payload | lower == 'off' }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.pomona_pump
+
+  - id: pomona_light_follow_firmware
+    alias: Pomona light — follow firmware request
+    description: Relays pomona/light/request onto the Fibaro plug.
+    mode: queued
+    max: 10
+    trigger:
+      - platform: mqtt
+        topic: pomona/light/request
+    condition:
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "on"
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.payload | lower == 'on' }}"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.pomona_lamps
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.payload | lower == 'off' }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.pomona_lamps
+
+  - id: pomona_command_handover
+    alias: Pomona — control handed back to HA
+    description: >-
+      The firmware was in command and the unit went offline, so HA has resumed
+      its own schedule. Worth saying out loud, because the tower silently
+      changing controller is exactly the kind of thing that is confusing to
+      debug three days later.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        from: "on"
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.pomona_firmware_control
+        state: "on"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Pomona — HA has taken back the schedule
+          message: >-
+            The GIGA was in command but is no longer reachable, so the HA pump
+            and light schedules have resumed automatically. Nothing is lost —
+            watering continues — but firmware control will not resume until the
+            unit is back online.
+          notification_id: pomona_command_handover
