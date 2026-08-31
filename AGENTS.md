@@ -26,6 +26,11 @@ This repository stores Home Assistant operations docs and YAML templates for bat
   wedge it for hours — #212):
   - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook
   - [packages/bluetti_selfheal.yaml](packages/bluetti_selfheal.yaml) — drop-in package
+- Pomona tower pump + grow-light scheduling (first automation in the Pomona
+  project; control lives in HA smart plugs, deliberately NOT in the GIGA
+  firmware, which reboots for OTA):
+  - [pomona-schedule.md](pomona-schedule.md) - runbook
+  - [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml) - drop-in package
 - Bluetti battery optimizer (price-aware charge/discharge + ML + savings reporting):
   - [zeus/](zeus/) — standalone Python service; see its [README.md](zeus/README.md)
 

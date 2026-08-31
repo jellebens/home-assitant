@@ -1,0 +1,198 @@
+# Pomona tower — pump + grow-light scheduling
+# ===========================================================================
+# First automation in the Pomona project. Until now control was explicitly
+# DEFERRED (pump on a dumb power pack, no controller); the tower was planted
+# on 2026-08-31 and now needs a duty cycle and a photoperiod, so scheduling
+# moves in — but only via HA smart plugs, NOT via the GIGA firmware. Keeping
+# control out of the GIGA is deliberate: that unit reboots for OTA, and a
+# reboot must never be able to strand the pump off or the lights on.
+#
+# Drop-in Home Assistant *package*. Like the rest of this repo it is NOT
+# auto-deployed — the `home-assitant` repo does not sync to vesta. Apply by
+# hand on vesta (vesta.local / 192.168.50.18):
+#     /config/packages/pomona_schedule.yaml
+# with packages enabled in configuration.yaml:
+#     homeassistant:
+#       packages: !include_dir_named packages
+# Companion runbook: ../pomona-schedule.md
+#
+# ---------------------------------------------------------------------------
+# VERIFY THE ENTITY IDS BEFORE APPLYING
+#
+# These were read from HA as friendly names "Pomona Pump" and "Pomona Lamps",
+# and the entity_ids below are the standard slugs. If either was ever renamed,
+# the slug differs and these automations silently do NOTHING — no error, just
+# a pump that never cycles. Check Developer Tools -> States and correct here.
+#
+# ---------------------------------------------------------------------------
+# NO DRY-RUN PROTECTION YET — the one guard that would protect hardware
+#
+# A submersible pump run dry burns out. The tower HAS a calibrated level probe,
+# but its readings go MQTT -> Telegraf -> InfluxDB -> Grafana and never reach
+# HA, so there is no entity to condition on. Until a pomona water-level sensor
+# is exposed to HA (an MQTT sensor against the same broker would do it), these
+# schedules will happily run the pump into an empty reservoir. Watch the level
+# by hand, and see the runbook for the fix.
+#
+# ---------------------------------------------------------------------------
+# THE TWO MODES
+#
+# `input_boolean.pomona_establishment` — ON now, turn it OFF around 2026-09-14
+# (~2 weeks after transplant).
+#
+#                        | establishment          | established
+#   pump, light hours    | 15 min on / 15 min off | 15 min on / 45 min off
+#   pump, dark hours     | 15 min on / 15 min off | 15 min on, every 2 h
+#   photoperiod          | 12 h (08:00-20:00)     | 14 h (06:00-20:00)
+#
+# WHY establishment is wetter: freshly transplanted roots are still only in
+# the sponge and have not reached down into the tower interior. They cannot
+# ride out a long dry gap, and a sponge that dries once will kill the plant.
+# Once roots hang free the opposite is true — roots need air, so cycling beats
+# soaking and the off-periods lengthen.
+#
+# WHY the light is shorter at first: the seedlings came off a tray and were
+# advised shade for 2-3 days, so ramping avoids scorching them. 14 h is the
+# steady-state target for fruiting crops indoors, and the DARK period is not
+# optional — never run these lamps 24 h.
+# ===========================================================================
+
+input_boolean:
+  pomona_establishment:
+    name: Pomona establishment mode
+    icon: mdi:sprout
+    # ON = the wetter, gentler first-fortnight schedule. Transplanted
+    # 2026-08-31, so turn this OFF around 2026-09-14.
+
+automation:
+  # -------------------------------------------------------------------------
+  # PUMP
+  # -------------------------------------------------------------------------
+  - id: pomona_pump_on_hourly
+    alias: Pomona pump ON (top of the hour)
+    description: >-
+      Fires every hour at :00. In establishment mode the pump runs regardless;
+      once established it runs through the light period, and only on even
+      hours through the night when transpiration is low.
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "0"
+    condition:
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: input_boolean.pomona_establishment
+            state: "on"
+          - condition: time
+            after: "06:00:00"
+            before: "20:00:00"
+          - condition: template
+            value_template: "{{ now().hour % 2 == 0 }}"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.pomona_pump
+
+  - id: pomona_pump_on_half_hour
+    alias: Pomona pump ON (half past, establishment only)
+    description: >-
+      The extra half-hourly wetting that makes establishment 15/15 rather than
+      15/45. Does nothing once establishment mode is off.
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "30"
+    condition:
+      - condition: state
+        entity_id: input_boolean.pomona_establishment
+        state: "on"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.pomona_pump
+
+  - id: pomona_pump_off
+    alias: Pomona pump OFF (15 minutes after each start)
+    description: >-
+      Single OFF rule serving both modes — 15 minutes of run time per start.
+      Firing when the pump is already off is harmless, which is deliberate: it
+      doubles as a failsafe against a missed OFF leaving the pump running.
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "15"
+      - platform: time_pattern
+        minutes: "45"
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.pomona_pump
+
+  # -------------------------------------------------------------------------
+  # GROW LIGHT
+  # -------------------------------------------------------------------------
+  - id: pomona_light_on_established
+    alias: Pomona light ON 06:00 (established only)
+    description: Extends the photoperiod from 12 h to 14 h once past establishment.
+    mode: single
+    trigger:
+      - platform: time
+        at: "06:00:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.pomona_establishment
+        state: "off"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.pomona_lamps
+
+  - id: pomona_light_on
+    alias: Pomona light ON 08:00
+    description: >-
+      Runs in both modes. In establishment this starts a gentler 12 h day; once
+      established the lamps are already on from 06:00 and this is a harmless
+      no-op that also recovers a missed 06:00 trigger.
+    mode: single
+    trigger:
+      - platform: time
+        at: "08:00:00"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.pomona_lamps
+
+  - id: pomona_light_off
+    alias: Pomona light OFF 20:00
+    description: >-
+      Ends the photoperiod. The dark period is required — plants respire and
+      set fruit in it, and alpine strawberries under permanent light do worse,
+      not better.
+    mode: single
+    trigger:
+      - platform: time
+        at: "20:00:00"
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.pomona_lamps
+
+  - id: pomona_light_off_failsafe
+    alias: Pomona light OFF failsafe (23:00)
+    description: >-
+      Catches a missed 20:00 OFF — an HA restart across the trigger, or a
+      manual switch-on that was forgotten. Cheap insurance against cooking the
+      tower overnight.
+    mode: single
+    trigger:
+      - platform: time
+        at: "23:00:00"
+    condition:
+      - condition: state
+        entity_id: switch.pomona_lamps
+        state: "on"
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.pomona_lamps

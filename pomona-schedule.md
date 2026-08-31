@@ -1,0 +1,109 @@
+# Pomona — pump and grow-light scheduling (runbook)
+
+Companion to [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml).
+
+The Pomona tower was planted on **2026-08-31** (18 of 30 pods: 9 alpine
+strawberry, 4 paprika, 3 Dulce Italiano, 2 chili — see the pomona repo's
+`docs/planting-plan.md`). Until then the pump ran continuously off a dumb power
+pack and there was no light schedule at all. This package gives both a duty
+cycle.
+
+## Design decisions
+
+**Control lives in Home Assistant, not in the GIGA firmware.** The project
+deliberately deferred automated control, and this does not reverse that for the
+unit: the GIGA still only measures and publishes. Scheduling runs on HA smart
+plugs, because the GIGA reboots for OTA updates and a reboot must never be able
+to strand the pump off or the lamps on. It also keeps the schedule editable
+without reflashing anything.
+
+**Two modes, one toggle.** `input_boolean.pomona_establishment` is ON now and
+should be turned **OFF around 2026-09-14**, roughly two weeks after transplant.
+
+| | establishment | established |
+|---|---|---|
+| Pump, light hours | 15 min on / 15 min off | 15 min on / 45 min off |
+| Pump, dark hours | 15 min on / 15 min off | 15 min on, every 2 h |
+| Photoperiod | 12 h (08:00–20:00) | 14 h (06:00–20:00) |
+
+*Why establishment is wetter:* freshly transplanted roots are still confined to
+the sponge and have not reached down into the tower interior. They cannot ride
+out a long dry gap, and a sponge that dries out once takes the plant with it.
+Once roots hang free in the tower the logic inverts — roots need oxygen, so
+cycling beats soaking and the off-periods lengthen.
+
+*Why the photoperiod ramps:* the seedlings came straight off a propagation tray
+and want shade for the first few days. 14 h is the steady-state target for
+fruiting crops indoors. The dark period is **not** optional — never run these
+lamps 24 h.
+
+## Applying it
+
+This repo does **not** sync to vesta. Apply by hand:
+
+1. Copy `packages/pomona_schedule.yaml` to `/config/packages/` on vesta
+   (`vesta.local` / `192.168.50.18`).
+2. Confirm `configuration.yaml` has packages enabled:
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+3. **Verify the entity IDs first** — see below.
+4. Developer Tools → YAML → Check configuration, then Restart.
+5. Confirm `input_boolean.pomona_establishment` exists and is **ON**.
+
+## ⚠ Verify the entity IDs before applying
+
+The package assumes:
+
+- `switch.pomona_pump`
+- `switch.pomona_lamps`
+
+Those are the standard slugs for the friendly names **Pomona Pump** and
+**Pomona Lamps** as they appear in HA today, but a renamed entity keeps its
+original slug. If either is wrong, **the automations fail silently** — no
+error, just a pump that never cycles. Check Developer Tools → States and
+correct the package.
+
+## ⚠ Known gap: no dry-run protection
+
+**A submersible pump run dry burns out.** The tower has a calibrated level
+probe, but its readings travel MQTT → Telegraf → InfluxDB → Grafana and never
+reach Home Assistant, so there is no entity to condition the pump on. These
+schedules will run the pump into an empty reservoir without complaint.
+
+Until that is closed, **watch the reservoir level by hand** — the tower holds
+7.5 L and 18 plants will draw it down noticeably once established.
+
+The fix is small and worth doing: expose the pomona water level to HA as an
+MQTT sensor against the same broker the GIGA already publishes to
+(`mqtt.lab.local:1883`, topic `pomona/water/...`), then add a condition to both
+pump-ON automations:
+
+```yaml
+      - condition: numeric_state
+        entity_id: sensor.pomona_water_level
+        above: <low-level threshold>
+```
+
+and an alert when it trips. Worth its own card.
+
+## Tuning it later
+
+- **Pump too wet / algae or root rot appearing:** shorten to 10 min on, or drop
+  the establishment half-hour trigger early.
+- **Sponges drying between cycles:** stay in establishment mode longer, or add
+  a `:45` ON trigger.
+- **Light level:** the target is **≥10 klx at canopy** on the BH1750. If the
+  lamps cannot reach it, more hours will not substitute for intensity —
+  fruiting crops need the photon count, not the clock time.
+- **Reservoir warming:** a pump running more heats a 10 L tank. If water
+  temperature climbs above ~22 °C, shorten the cycles rather than the
+  photoperiod.
+
+## Related
+
+- Planting as-built and nutrient targets: pomona repo `docs/planting-plan.md`
+  (EC 0.8–1.0 now, ramping to the shared 1.4–1.6 over 2–3 weeks; pH ~6.0)
+- Seedling history and the lettuce post-mortem: pomona repo `docs/seeding/`
+- Trello #219 (design/crops), #224 (phase 2 — peristaltic dosing pumps)
