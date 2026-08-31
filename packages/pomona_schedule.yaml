@@ -25,14 +25,35 @@
 # a pump that never cycles. Check Developer Tools -> States and correct here.
 #
 # ---------------------------------------------------------------------------
-# NO DRY-RUN PROTECTION YET — the one guard that would protect hardware
+# LEVEL AWARENESS — partial, and honestly so
 #
-# A submersible pump run dry burns out. The tower HAS a calibrated level probe,
-# but its readings go MQTT -> Telegraf -> InfluxDB -> Grafana and never reach
-# HA, so there is no entity to condition on. Until a pomona water-level sensor
-# is exposed to HA (an MQTT sensor against the same broker would do it), these
-# schedules will happily run the pump into an empty reservoir. Watch the level
-# by hand, and see the runbook for the fix.
+# The tower level probe now reaches HA (packages/pomona_telemetry.yaml), but it
+# does NOT give true dry-run protection, because of how it is mounted.
+#
+# The CQRSENYW003 is mounted as a TOP-UP GAUGE: point 1 wets at 8.2 L, point 3
+# at 9.7 L. A reading of 0 points means "below 8.2 L" and the probe is BLIND
+# below that line — it cannot tell 8 L from empty.
+#
+# So cutting the pump at 0 points would be WRONG twice over: it would stop
+# irrigation at a perfectly healthy ~8 L, and it would fire routinely between
+# top-ups. Killing the watering every time a top-up is a day late would destroy
+# the crop far more reliably than the dry-run it was meant to prevent.
+#
+# What is implemented instead:
+#   * a refill NOTIFICATION at 0 points (in the telemetry package), and
+#   * a SUSTAINED-low inhibit below — the pump stops only after the level has
+#     read 0 continuously for 24 h, which no longer means "time to top up" but
+#     "nobody has topped up and this tank may genuinely be running out".
+#
+# It FAILS OPEN: if the sensor is unavailable or unknown, the pump keeps
+# running. Over any 24 h window, plants dying of no water is a near certainty
+# while an unnoticed empty tank is not, and the reservoir drains over days
+# rather than hours.
+#
+# REAL dry-run protection is a MECHANICAL fix, not a software one: remount the
+# probe (or add a second one) at pump-intake height, with point 1 just above
+# the intake, so 0/4 genuinely means "stop the pump now". See the pomona repo
+# doc docs/sensors/level-probe.md, which names both mounting options.
 #
 # ---------------------------------------------------------------------------
 # THE TWO MODES
@@ -89,6 +110,10 @@ automation:
             before: "20:00:00"
           - condition: template
             value_template: "{{ now().hour % 2 == 0 }}"
+      # Sustained-low inhibit. Fails OPEN on unknown/unavailable, on purpose.
+      - condition: template
+        value_template: >-
+          {{ not is_state('binary_sensor.pomona_level_critically_low', 'on') }}
     action:
       - service: switch.turn_on
         target:
@@ -107,6 +132,9 @@ automation:
       - condition: state
         entity_id: input_boolean.pomona_establishment
         state: "on"
+      - condition: template
+        value_template: >-
+          {{ not is_state('binary_sensor.pomona_level_critically_low', 'on') }}
     action:
       - service: switch.turn_on
         target:

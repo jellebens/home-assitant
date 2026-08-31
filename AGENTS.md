@@ -31,6 +31,10 @@ This repository stores Home Assistant operations docs and YAML templates for bat
   firmware, which reboots for OTA):
   - [pomona-schedule.md](pomona-schedule.md) - runbook
   - [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml) - drop-in package
+  - [packages/pomona_telemetry.yaml](packages/pomona_telemetry.yaml) - tower
+    telemetry into HA over MQTT (no firmware change needed - the GIGA already
+    publishes) plus the level interlock; note the probe is a TOP-UP gauge and
+    is blind below 8.2 L, so this is not true dry-run protection
 - Bluetti battery optimizer (price-aware charge/discharge + ML + savings reporting):
   - [zeus/](zeus/) — standalone Python service; see its [README.md](zeus/README.md)
 
