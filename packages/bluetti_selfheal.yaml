@@ -231,6 +231,21 @@ template:
             {% else %}
               alive
             {% endif %}
+          # #259 FIX (2026-08-31): REST re-stamp heartbeat. The lar's freshness
+          # gate (ha.battery_liveness_max_age_seconds, 300s) reads THIS entity's
+          # REST last_updated — which HA only advances when the state or an
+          # attribute CHANGES. The on/off state and the copied detector strings
+          # above are constant for hours, so without churn this sensor itself
+          # looked frozen over REST and the gate refused the override — the exact
+          # recursion this sensor exists to break (observed live: override=0
+          # while alive). This attribute's value changes every minute (`now()`
+          # gives the template entity a minutely time trigger AND a new value),
+          # forcing a fresh state write => REST last_updated advances ~every 60s
+          # while HA's template engine is healthy. If the template engine wedges,
+          # the churn stops, the gate refuses, and the lar's stale-hold stands —
+          # the gate's safety intent is preserved.
+          heartbeat: >
+            {{ now().replace(second=0, microsecond=0).isoformat() }}
 
 # --- Auto-recover + loop guard ----------------------------------------------
 automation:
@@ -333,6 +348,45 @@ automation:
         # (`bluetti_selfheal_notify_stuck`, #246) so it fires exactly once per
         # episode and can carry an optional one-shot mobile push — instead of the
         # old inline escalate that re-fired on every ~15-min recheck tick.
+
+  # 1a-bis) FORCE-REFRESH for the lar (#259, owner 2026-08-31). HA only REWRITES
+  #     an entity's state — and thus the REST `last_updated` that the lar's
+  #     staleness guard reads — when the VALUE changes. An idle battery holds
+  #     constant values for hours, so over REST the feed looks frozen and the lar
+  #     suppresses valid plans (the idle-deadlock). Reloading the Bluetti config
+  #     entry recreates its entities => fresh state writes => fresh REST
+  #     timestamps; it doubles as unwedging a genuinely frozen poller. Fires when
+  #     the freshest battery entity hasn't been rewritten for >10 min (well under
+  #     the lar's 900s guard), so at most ~1 reload per ~10 idle minutes; after a
+  #     reload the ages reset, which is the cooldown. All-unavailable (hard-down)
+  #     is deliberately excluded — that is #212's capped episode logic above, not
+  #     a keep-fresh problem.
+  - id: bluetti_force_refresh_values
+    alias: "Bluetti force-refresh: reload entry when REST values sit unchanged >10 min"
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: template
+        value_template: >
+          {% set signals = [
+            'sensor.office_buzzbrick_ap3002532000565690_grid_input_power',
+            'sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power',
+            'sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power',
+            'sensor.office_buzzbrick_battery_level'
+          ] %}
+          {% set ns = namespace(ages=[]) %}
+          {% for e in signals %}
+            {% if states(e) not in ['unknown', 'unavailable'] and states[e] is not none %}
+              {% set ns.ages = ns.ages + [ (now() - states[e].last_updated).total_seconds() ] %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.ages | length > 0 and (ns.ages | min) > 600 }}
+    action:
+      - service: homeassistant.reload_config_entry
+        target:
+          entity_id: sensor.office_buzzbrick_battery_level
 
   # 1b) Owner escalation (#246): when the auto-heal has SPENT its reload budget
   #     (counter hit the cap of 4) and telemetry is STILL frozen, tell the owner
