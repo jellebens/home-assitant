@@ -168,6 +168,70 @@ template:
           photovoltaics_input_power_w_excluded: >
             {{ states('sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power') }}
 
+      # LAR-liveness signal (#259) — HA-side half of the jupiter lar permanent
+      # fix (lar PR #125). ------------------------------------------------------
+      # The lar reads HA over REST /api/states, which serves a CACHE-FROZEN
+      # `last_reported` (it advances only on a value CHANGE over the REST API).
+      # For an idle battery every value is constant, so ALL REST timestamps
+      # freeze — and the lar cannot distinguish "integration idle-but-alive"
+      # from "integration dead". HA's TEMPLATE engine, by contrast, sees the
+      # TRUE ~13s `last_reported` heartbeat (that is exactly what the Stale
+      # detector above keys off). So we expose that live liveness verdict as a
+      # plain entity STATE the lar can read over REST: on/off, not a timestamp.
+      # The lar consumes this via `ha.battery_liveness_entity` instead of any
+      # REST timestamp.
+      #
+      # Semantics expected by lar PR #125:
+      #   on  ⇔ integration CONFIRMED ALIVE = NOT stale AND NOT all-zero.
+      #   off ⇔ not confirmed alive (frozen, all-zeros, OR a detector is itself
+      #         unknown/unavailable) — the safe/conservative value so the lar
+      #         keeps its hold rather than trusting a wedged sensor.
+      #
+      # Robustness: this is a STRICT positive confirmation. It is `on` ONLY when
+      # BOTH underlying detectors are present, in a known state, and NOT firing.
+      # If either detector is unknown/unavailable we return `off` explicitly —
+      # note that a bare `not is_state(stale,'on')` would read TRUE for an
+      # unavailable detector (is_state != 'on'), which would FALSELY assert
+      # alive; the explicit guard below prevents that. Because it inherits the
+      # Stale detector's template-based `last_reported` heartbeat, it is `on`
+      # while the integration polls (even when idle with constant values) and
+      # flips `off` once the heartbeat freezes.
+      - name: Bluetti Integration Alive
+        unique_id: bluetti_integration_alive
+        device_class: connectivity   # on = connected/alive, off = down
+        icon: mdi:heart-pulse
+        state: >
+          {% set stale = 'binary_sensor.bluetti_telemetry_stale' %}
+          {% set zero  = 'binary_sensor.bluetti_telemetry_all_zero' %}
+          {% if states(stale) in ['unknown', 'unavailable'] or states[stale] is none
+             or states(zero)  in ['unknown', 'unavailable'] or states[zero]  is none %}
+            off
+          {% else %}
+            {{ not is_state(stale, 'on') and not is_state(zero, 'on') }}
+          {% endif %}
+        attributes:
+          # Surface the two conjuncts + a compact reason, for dashboards / the
+          # lar's own diagnostics.
+          stale: >
+            {{ states('binary_sensor.bluetti_telemetry_stale') }}
+          all_zero: >
+            {{ states('binary_sensor.bluetti_telemetry_all_zero') }}
+          reason: >
+            {% set stale = 'binary_sensor.bluetti_telemetry_stale' %}
+            {% set zero  = 'binary_sensor.bluetti_telemetry_all_zero' %}
+            {% if states(stale) in ['unknown', 'unavailable'] or states[stale] is none
+               or states(zero)  in ['unknown', 'unavailable'] or states[zero]  is none %}
+              detectors_unavailable
+            {% elif is_state(stale, 'on') and is_state(zero, 'on') %}
+              stale_and_all_zero
+            {% elif is_state(stale, 'on') %}
+              stale
+            {% elif is_state(zero, 'on') %}
+              all_zero
+            {% else %}
+              alive
+            {% endif %}
+
 # --- Auto-recover + loop guard ----------------------------------------------
 automation:
   # 1) When telemetry has been frozen for a sustained window, reload the Bluetti
