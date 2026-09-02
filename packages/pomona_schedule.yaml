@@ -95,6 +95,32 @@ input_boolean:
     # on when the firmware starts publishing pomona/pump/request; turn it off
     # and HA resumes its own schedule immediately.
 
+# Mirrors of the firmware's RETAINED control requests (#277). The relay
+# automations below are edge-triggered; these sensors carry the CURRENT
+# desired state at all times, which is what the reconciliation automation
+# compares the plugs against. Retained + availability means they are correct
+# immediately after an HA restart and go unavailable with the unit.
+mqtt:
+  binary_sensor:
+    - name: Pomona pump requested
+      unique_id: pomona_pump_requested
+      state_topic: pomona/pump/request
+      payload_on: "on"
+      payload_off: "off"
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      icon: mdi:water-pump
+    - name: Pomona light requested
+      unique_id: pomona_light_requested
+      state_topic: pomona/light/request
+      payload_on: "on"
+      payload_off: "off"
+      availability_topic: pomona/unit/status
+      payload_available: online
+      payload_not_available: offline
+      icon: mdi:lightbulb-auto
+
 template:
   - binary_sensor:
       - name: Pomona firmware in command
@@ -354,6 +380,85 @@ automation:
           - conditions:
               - condition: template
                 value_template: "{{ trigger.payload | lower == 'off' }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.office_pomona_lamps
+
+  # -------------------------------------------------------------------------
+  # RECONCILIATION (#277) — the relays above are edge-triggered: they act once
+  # when a request message arrives. A single dropped Z-Wave frame (observed
+  # 2026-09-03: firmware wanted the pump ON, plug sat OFF until a manual
+  # command) or an HA restart across an edge leaves the plug diverged from the
+  # firmware's intent FOREVER. This closes the loop: every 5 minutes, while
+  # the firmware is in command, re-assert any plug that disagrees with the
+  # retained request. The explicit state conditions keep it quiet when
+  # everything already matches — no Z-Wave chatter on the happy path. A
+  # requested-sensor that is unknown/unavailable matches no branch: fails
+  # safe, nothing is asserted.
+  # -------------------------------------------------------------------------
+  - id: pomona_relay_reconcile
+    alias: Pomona — reconcile plugs with firmware requests
+    description: >-
+      Every 5 minutes, while the firmware is in command, re-assert the pump
+      and lamp plugs to match the retained request topics. Self-heals dropped
+      Z-Wave commands, missed MQTT edges, and restarts.
+    mode: single
+    max_exceeded: silent
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: binary_sensor.pomona_firmware_in_command
+        state: "on"
+    action:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.pomona_pump_requested
+                state: "on"
+              - condition: state
+                entity_id: switch.pomona_pump
+                state: "off"
+              # Same belt-and-braces interlock as the edge relay.
+              - condition: state
+                entity_id: binary_sensor.pomona_level_critically_low
+                state: "off"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.pomona_pump
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.pomona_pump_requested
+                state: "off"
+              - condition: state
+                entity_id: switch.pomona_pump
+                state: "on"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.pomona_pump
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.pomona_light_requested
+                state: "on"
+              - condition: state
+                entity_id: switch.office_pomona_lamps
+                state: "off"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.office_pomona_lamps
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.pomona_light_requested
+                state: "off"
+              - condition: state
+                entity_id: switch.office_pomona_lamps
+                state: "on"
             sequence:
               - service: switch.turn_off
                 target:
