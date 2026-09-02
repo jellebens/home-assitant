@@ -115,6 +115,19 @@ This repo does **not** sync to vesta. Apply by hand:
 4. Developer Tools → YAML → Check configuration, then Restart.
 5. Confirm `input_boolean.pomona_establishment` exists and is **ON**.
 
+## Relay reconciliation (#277)
+
+The follow-firmware relays are edge-triggered; a dropped Z-Wave frame once
+left the pump OFF while the firmware wanted it ON (2026-09-03). The package
+therefore also mirrors the retained request topics into
+`binary_sensor.pomona_pump_requested` / `pomona_light_requested` and runs
+`Pomona — reconcile plugs with firmware requests` every 5 minutes while the
+firmware is in command: any plug that disagrees with the retained request is
+re-asserted (ON path still honors the level interlock; unknown/unavailable
+request sensors assert nothing). Applying this update needs a **restart** (new
+MQTT entities + automation), or reload both "Automations" and "Manually
+configured MQTT entities" from Developer Tools → YAML.
+
 ## ⚠ Verify the entity IDs before applying
 
 The package assumes:
