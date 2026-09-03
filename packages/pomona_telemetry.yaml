@@ -1,4 +1,8 @@
 # Pomona tower — telemetry into Home Assistant over MQTT
+# version: 1.0.0
+#   1.0.0 (2026-09-01) initial: MQTT sensors, settle check, sustained-low inhibit
+# Bump on EVERY applied change (owner rule 2026-09-03): patch for fixes,
+# minor for features — and update this header's history with it.
 # ===========================================================================
 # The GIGA already pushes everything needed. It publishes `pomona/<zone>/<metric>`
 # to the shared EMQX broker (mqtt.lab.local:1883) every 30 s, with a retained
