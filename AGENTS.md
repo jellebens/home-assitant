@@ -2,6 +2,13 @@
 
 This repository stores Home Assistant operations docs and YAML templates for battery economics.
 
+**Package versioning (owner rule, 2026-09-03):** every file under `packages/`
+carries a `# version: x.y.z` header with a short history. Bump it on EVERY
+change that gets applied to vesta — patch for fixes, minor for features — and
+add a history line. The repo does not sync to vesta, so the header is how you
+tell which behavior is actually live: compare the header on vesta against git
+before debugging anything.
+
 ## Project Map
 
 - Main stabilization docs:

@@ -1,4 +1,8 @@
 # Bluetti / buzzbrick telemetry self-heal (cards #212, #214, #246)
+# version: 1.0.0
+#   1.0.0 (2026-08-31) as applied on vesta (incl. the #259 liveness heartbeat)
+# Bump on EVERY applied change (owner rule 2026-09-03): patch for fixes,
+# minor for features — and update this header's history with it.
 # ===========================================================================
 # Makes the Bluetti *cloud* integration self-recover when a transient
 # DNS/network blip wedges its poller, so battery telemetry can't silently

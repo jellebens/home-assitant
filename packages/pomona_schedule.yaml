@@ -1,4 +1,11 @@
 # Pomona tower — pump + grow-light scheduling
+# version: 1.1.0
+#   1.1.0 (2026-09-03) relay reconciliation #277 (request mirrors + 5-min re-assert)
+#   1.0.1 (2026-09-01) lamp entity fix: switch.office_pomona_lamps (PR #17)
+#   1.0.0 (2026-09-01) initial: duty cycle, photoperiod, relays, handover
+# Bump on EVERY applied change (owner rule 2026-09-03): patch for fixes,
+# minor for features — and update this header's history with it. The version
+# ON VESTA tells you which behavior is live; compare before debugging.
 # ===========================================================================
 # First automation in the Pomona project. Until now control was explicitly
 # DEFERRED (pump on a dumb power pack, no controller); the tower was planted
