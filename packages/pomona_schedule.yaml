@@ -1,5 +1,6 @@
 # Pomona tower — pump + grow-light scheduling
-# version: 1.1.0
+# version: 1.2.0
+#   1.2.0 (2026-09-11) pump-not-pumping alert: requested on but no plug power (#278)
 #   1.1.0 (2026-09-03) relay reconciliation #277 (request mirrors + 5-min re-assert)
 #   1.0.1 (2026-09-01) lamp entity fix: switch.office_pomona_lamps (PR #17)
 #   1.0.0 (2026-09-01) initial: duty cycle, photoperiod, relays, handover
@@ -498,3 +499,77 @@ automation:
             watering continues — but firmware control will not resume until the
             unit is back online.
           notification_id: pomona_command_handover
+
+  # -------------------------------------------------------------------------
+  # PUMP NOT PUMPING (owner 2026-09-11, #278). The pump runs in INTERVALS
+  # (15 min per hour by day, per two hours at night), so this must never key
+  # on the clock or on "no power" alone — an idle interval is not a fault.
+  # It keys on INTENDED state only, and needs the mismatch to hold 10 min:
+  #   (a) switch.pomona_pump is ON (HA believes the plug is on — whichever
+  #       schedule drives it) but the Fibaro reads under 2 W (~4.7 W when the
+  #       pump runs): plug tripped, pump dead or dry, wiring.
+  #   (b) the GIGA is in command and has requested "on" but the plug switch
+  #       is still OFF: the relay path is broken (HA not following).
+  # An unavailable power sensor is ignored (a Z-Wave hiccup is not a dry
+  # pump) — the plug going unavailable is its own zwave_js signal. This
+  # matters twice: no watering, and Demeter (the k3s dosing brain) counts
+  # pump time from the REQUEST before judging a dose, so an unpowered pump
+  # makes it judge chemistry on an unmixed tank. Cleared automatically when
+  # power returns.
+  # -------------------------------------------------------------------------
+  - id: pomona_pump_not_pumping
+    alias: Pomona — pump should be running but is not
+    description: >-
+      (a) plug switched on but < 2 W for 10 min, or (b) firmware in command
+      requesting on but the plug switch stayed off for 10 min. Never fires in
+      a scheduled off-interval — it compares intended state with reality.
+    mode: single
+    trigger:
+      - id: no_power
+        platform: template
+        value_template: >-
+          {{ is_state('switch.pomona_pump', 'on')
+             and states('sensor.pomona_pump_power') not in ['unknown', 'unavailable']
+             and (states('sensor.pomona_pump_power') | float(0)) < 2 }}
+        for: "00:10:00"
+      - id: relay
+        platform: template
+        value_template: >-
+          {{ is_state('binary_sensor.pomona_firmware_in_command', 'on')
+             and is_state('binary_sensor.pomona_pump_requested', 'on')
+             and is_state('switch.pomona_pump', 'off') }}
+        for: "00:10:00"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Pomona — pump should be running but is NOT
+          message: >-
+            {% if trigger.id == 'no_power' %}
+            switch.pomona_pump has been ON for 10 minutes but the plug draws
+            only {{ states('sensor.pomona_pump_power') }} W — the pump is not
+            running (tripped plug, dead or dry pump, wiring).
+            {% else %}
+            The GIGA is in command and has requested the pump ON for 10
+            minutes, but switch.pomona_pump is still off — the relay path
+            (HA -> Fibaro) is not following the request.
+            {% endif %}
+            The tower is not being watered and Demeter is judging doses on an
+            unmixed tank. (firmware in command:
+            {{ states('binary_sensor.pomona_firmware_in_command') }}, requested:
+            {{ states('binary_sensor.pomona_pump_requested') }}, switch:
+            {{ states('switch.pomona_pump') }}, power:
+            {{ states('sensor.pomona_pump_power') }} W)
+          notification_id: pomona_pump_not_pumping
+
+  - id: pomona_pump_pumping_again
+    alias: Pomona — pump pumping again
+    description: Clears the not-pumping notification as soon as the plug draws power.
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.pomona_pump_power
+        above: 2
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: pomona_pump_not_pumping
