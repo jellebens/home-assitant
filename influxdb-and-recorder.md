@@ -16,6 +16,12 @@ Two related operational items for the HA instance on **vesta.local (192.168.50.1
 
 ## 1. HA → InfluxDB integration
 
+> **Retention (2026-09-11, card #290):** the `homeassistant` bucket is
+> **infinite** and that is now declared in gitops (`platform/influxdb-config`
+> `buckets.list`) and reconciled hourly — see
+> [ADR-0001](docs/adr/0001-all-telemetry-archived-forever.md). Keep the stream
+> unfiltered (§ "Filtering" below).
+
 ### Endpoint (already in place, verified 2026-06-29)
 
 - URL: **`https://influxdb.lab.local`** → gateway VIP `192.168.50.200`
