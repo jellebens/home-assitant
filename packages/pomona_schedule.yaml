@@ -1,5 +1,6 @@
 # Pomona tower — pump + grow-light scheduling
-# version: 1.2.0
+# version: 1.3.0
+#   1.3.0 (2026-09-11) relay the pump plug's power to MQTT for Demeter (#278, demeter ADR-0005)
 #   1.2.0 (2026-09-11) pump-not-pumping alert: requested on but no plug power (#278)
 #   1.1.0 (2026-09-03) relay reconciliation #277 (request mirrors + 5-min re-assert)
 #   1.0.1 (2026-09-01) lamp entity fix: switch.office_pomona_lamps (PR #17)
@@ -512,10 +513,10 @@ automation:
   #       is still OFF: the relay path is broken (HA not following).
   # An unavailable power sensor is ignored (a Z-Wave hiccup is not a dry
   # pump) — the plug going unavailable is its own zwave_js signal. This
-  # matters twice: no watering, and Demeter (the k3s dosing brain) counts
-  # pump time from the REQUEST before judging a dose, so an unpowered pump
-  # makes it judge chemistry on an unmixed tank. Cleared automatically when
-  # power returns.
+  # matters twice: no watering, and Demeter (the k3s dosing brain) needs
+  # the pump to have run before it judges a dose — since demeter 0.5.1 it
+  # reads this same plug power (relayed below) and refuses to dose while
+  # the pump draws nothing. Cleared automatically when power returns.
   # -------------------------------------------------------------------------
   - id: pomona_pump_not_pumping
     alias: Pomona — pump should be running but is not
@@ -553,8 +554,8 @@ automation:
             minutes, but switch.pomona_pump is still off — the relay path
             (HA -> Fibaro) is not following the request.
             {% endif %}
-            The tower is not being watered and Demeter is judging doses on an
-            unmixed tank. (firmware in command:
+            The tower is not being watered; Demeter sees the same 0 W and will
+            not dose until power returns. (firmware in command:
             {{ states('binary_sensor.pomona_firmware_in_command') }}, requested:
             {{ states('binary_sensor.pomona_pump_requested') }}, switch:
             {{ states('switch.pomona_pump') }}, power:
@@ -573,3 +574,45 @@ automation:
       - service: persistent_notification.dismiss
         data:
           notification_id: pomona_pump_not_pumping
+
+  # -------------------------------------------------------------------------
+  # PUMP POWER -> MQTT (owner 2026-09-11, #278; demeter 0.5.1 / ADR-0005).
+  # Demeter judges a dose only on a MIXED tank. Its only evidence of
+  # circulation used to be the firmware's REQUEST — and on 2026-09-11 it
+  # counted ten minutes of "request on" while HA (firmware control still
+  # off) drove the plug on its own schedule. The plug's measured power is
+  # the truth, so relay it: retained pomona/pump/power = the Fibaro's watts,
+  # republished on every change, at HA start and every 5 minutes (Demeter
+  # treats a reading older than 15 min as unknown and falls back to the
+  # request). Retained like the requests: a restarted Demeter learns the
+  # current state at once. Unknown/unavailable is not published — a stale
+  # retained value is worse than the fallback.
+  # Broker: the homeassistant user needs `publish pomona/pump/power`
+  # (gitops platform/mqtt — live mnesia rule + acl.conf DR mirror).
+  # -------------------------------------------------------------------------
+  - id: pomona_pump_power_to_mqtt
+    alias: Pomona — relay pump plug power to MQTT (for Demeter)
+    description: >-
+      Publishes sensor.pomona_pump_power as retained pomona/pump/power on
+      every change, at HA start and every 5 minutes, so Demeter can confirm
+      the pump actually ran before judging a dose.
+    mode: queued
+    max: 10
+    trigger:
+      - platform: state
+        entity_id: sensor.pomona_pump_power
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('sensor.pomona_pump_power') not in ['unknown', 'unavailable'] }}
+    action:
+      - service: mqtt.publish
+        data:
+          topic: pomona/pump/power
+          payload: "{{ states('sensor.pomona_pump_power') | float(0) | round(1) }}"
+          qos: 1
+          retain: true
