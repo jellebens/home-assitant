@@ -50,22 +50,22 @@ certified smart plugs and **no mains wiring is touched**.
 
 ### The contract
 
-Must match the firmware (pomona `docs/mqtt.md`) and demeter ADR-0008:
+Must match the firmware (pomona `docs/mqtt.md`) and ceres ADR-0008:
 
-| Topic (below `demeter/pomona-0001/`) | Payload | Retained |
+| Topic (below `ceres/pomona-0001/`) | Payload | Retained |
 |---|---|---|
 | `actuator/pump/state` | `on` / `off` — the node's decision | **yes**, QoS 1 |
 | `actuator/light/state` | `on` / `off` | **yes**, QoS 1 |
 | `actuator/pump/reason` | `schedule` / `level_low` / `settling` / `override` / `boot_safe` | yes |
-| `actuator/pump/power_w` | the plug's watts — **published by HA** for Demeter (ADR-0005) | yes, QoS 1 |
+| `actuator/pump/power_w` | the plug's watts — **published by HA** for Ceres (ADR-0005) | yes, QoS 1 |
 | `sys/status` | `online` / `offline` (LWT) — every sensor's availability | yes |
 
-Packages 2.0.0 (2026-09-12, demeter card #295) moved to this **v2 wire**
-(demeter repo `docs/adr/0008-mqtt-topic-contract-v2.md`). Until pomona
+Packages 2.0.0 (2026-09-12, ceres card #295) moved to this **v2 wire**
+(ceres repo `docs/adr/0008-mqtt-topic-contract-v2.md`). Until pomona
 firmware 2.0.0 is on the tower the broker's republish bridge mirrors the v1
 `pomona/#` tree onto it, so the packages work with either firmware. The
-`homeassistant` broker user needs `subscribe demeter/#` and `publish
-demeter/+/actuator/+/power_w`; switch to 2.0.0 only after the Demeter brain is
+`homeassistant` broker user needs `subscribe ceres/#` and `publish
+ceres/+/actuator/+/power_w`; switch to 2.0.0 only after the Vertumnus is
 on contract v2 (it reads the watts on the v2 topic).
 
 **Retained is load-bearing.** On an HA restart the broker replays the current

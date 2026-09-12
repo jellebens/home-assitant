@@ -1,13 +1,14 @@
 # Pomona tower — telemetry into Home Assistant over MQTT
-# version: 2.0.0
-#   2.0.0 (2026-09-12) the v2 wire (demeter card #295, ADR-0008): every topic moves to
-#                      demeter/pomona-0001/… — tele/<zone>/<metric>, sys/status; entity ids unchanged
+# version: 2.0.1
+#   2.0.1 (2026-09-12) the topic root is ceres/ (ceres ADR-0012: Demeter became Ceres)
+#   2.0.0 (2026-09-12) the v2 wire (ceres card #295, ADR-0008): every topic moves to
+#                      ceres/pomona-0001/… — tele/<zone>/<metric>, sys/status; entity ids unchanged
 #   1.0.0 (2026-09-01) initial: MQTT sensors, settle check, sustained-low inhibit
 # Bump on EVERY applied change (owner rule 2026-09-03): patch for fixes,
 # minor for features — and update this header's history with it.
 # ===========================================================================
-# The unit publishes `demeter/pomona-0001/tele/<zone>/<metric>` (the v2 wire of
-# the demeter repo's ADR-0008 — pomona firmware 2.0.0; before that the EMQX
+# The unit publishes `ceres/pomona-0001/tele/<zone>/<metric>` (the v2 wire of
+# the ceres repo's ADR-0008 — pomona firmware 2.0.0; before that the EMQX
 # republish bridge mirrors the v1 tree onto it) to the shared EMQX broker
 # (mqtt.lab.local:1883) every 30 s, with a retained `sys/status` backed by an
 # MQTT Last Will. This package subscribes; the entity ids did not change.
@@ -16,12 +17,12 @@
 # and never touched HA, which is why the pump schedule had no level awareness.
 #
 # Companion runbook: ../pomona-schedule.md
-# Topic schema of record: demeter repo `docs/adr/0008-mqtt-topic-contract-v2.md`
+# Topic schema of record: ceres repo `docs/adr/0008-mqtt-topic-contract-v2.md`
 #
 # ---------------------------------------------------------------------------
 # PREREQUISITE: the MQTT integration must be configured on this HA instance,
 # pointed at mqtt.lab.local:1883 with credentials that can SUBSCRIBE to
-# `demeter/#` (the `homeassistant` broker user, gitops platform/mqtt).
+# `ceres/#` (the `homeassistant` broker user, gitops platform/mqtt).
 #
 # ---------------------------------------------------------------------------
 # THE PROBE CANNOT BE REMOUNTED LOWER
@@ -53,8 +54,8 @@ mqtt:
   sensor:
     - name: Pomona water level points
       unique_id: pomona_water_level_points
-      state_topic: demeter/pomona-0001/tele/water/level_points
-      availability_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/tele/water/level_points
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       unit_of_measurement: pts
@@ -67,8 +68,8 @@ mqtt:
 
     - name: Pomona water temperature
       unique_id: pomona_water_temp_c
-      state_topic: demeter/pomona-0001/tele/water/temp_c
-      availability_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/tele/water/temp_c
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: temperature
@@ -77,8 +78,8 @@ mqtt:
 
     - name: Pomona EC
       unique_id: pomona_water_ec_ms_cm
-      state_topic: demeter/pomona-0001/tele/water/ec_ms_cm
-      availability_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/tele/water/ec_ms_cm
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       unit_of_measurement: mS/cm
@@ -90,8 +91,8 @@ mqtt:
 
     - name: Pomona pH
       unique_id: pomona_water_ph
-      state_topic: demeter/pomona-0001/tele/water/ph
-      availability_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/tele/water/ph
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       state_class: measurement
@@ -100,8 +101,8 @@ mqtt:
 
     - name: Pomona air temperature
       unique_id: pomona_air_temp_c
-      state_topic: demeter/pomona-0001/tele/air/temp_c
-      availability_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/tele/air/temp_c
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: temperature
@@ -110,8 +111,8 @@ mqtt:
 
     - name: Pomona air humidity
       unique_id: pomona_air_humidity_pct
-      state_topic: demeter/pomona-0001/tele/air/humidity_pct
-      availability_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/tele/air/humidity_pct
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: humidity
@@ -120,8 +121,8 @@ mqtt:
 
     - name: Pomona lux
       unique_id: pomona_air_lux
-      state_topic: demeter/pomona-0001/tele/air/lux
-      availability_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/tele/air/lux
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: illuminance
@@ -133,7 +134,7 @@ mqtt:
   binary_sensor:
     - name: Pomona unit online
       unique_id: pomona_unit_online
-      state_topic: demeter/pomona-0001/sys/status
+      state_topic: ceres/pomona-0001/sys/status
       payload_on: online
       payload_off: offline
       device_class: connectivity
