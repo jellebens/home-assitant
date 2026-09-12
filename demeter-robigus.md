@@ -22,11 +22,15 @@ hours. This package only *shows and notifies*; nothing here actuates.
 | `sensor.demeter_pomona_0001_alerts` | `demeter/pomona-0001/sys/alerts` | number of active conditions; attributes `alerts`, `conditions`, `critical`, `ts` |
 | `sensor.demeter_fleet_critical_alerts` | `demeter/sys/alerts` | number of critical conditions fleet-wide; attributes `alerts`, `units` |
 | `sensor.demeter_robigus_status` | `demeter/sys/status/robigus` | `online` / `offline` (Robigus's own LWT) |
+| `sensor.demeter_pomona_0001_advice` | `demeter/pomona-0001/sys/advice` | number of recommendations; attributes `advice`, `kinds`, `doses` (the advise-role brain's "add x ml by hand") |
 
 Automations: a persistent notification (id `demeter_fleet_critical`) when the
 fleet's critical count rises, dismissed when it reaches 0; one per-unit
 notification (`demeter_pomona_0001`) refreshed on every change of the
-tower's condition set, dismissed when clear. A phone push is a commented
+tower's condition set, dismissed when clear. A third notification
+(`demeter_pomona_0001_advice`) lists Robigus's recommendations (1.1.0, demeter
+#294): a plant that does not fit the unit's targets, the suggested compromise,
+a hand dose the brain asks for in the `advise` role. A phone push is a commented
 `notify.mobile_app_…` line — name your device and uncomment.
 
 ## Install (vesta)

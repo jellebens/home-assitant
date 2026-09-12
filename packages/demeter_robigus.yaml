@@ -1,4 +1,7 @@
-# version: 1.0.0
+# version: 1.1.0
+#   1.1.0  2026-09-12  demeter card #294: Robigus's ADVICE document (demeter/<unit>/sys/advice —
+#                      target validation against the crop windows, the brain's advise-role
+#                      "add x ml by hand") as a sensor + one persistent notification.
 #   1.0.0  2026-09-12  first cut (demeter card #293): Robigus's alert documents as
 #                      sensors + notifications on new critical / warning conditions.
 #
@@ -42,6 +45,19 @@ mqtt:
             "ts": value_json.ts} | tojson }}
       icon: mdi:shield-alert
       unit_of_measurement: "conditions"
+    # --- the tower's advice (what Demeter would like done by hand) -----------------------------
+    - name: "Demeter pomona-0001 advice"
+      unique_id: demeter_pomona_0001_advice
+      state_topic: demeter/pomona-0001/sys/advice
+      value_template: "{{ value_json.advice | count }}"
+      json_attributes_topic: demeter/pomona-0001/sys/advice
+      json_attributes_template: >-
+        {{ {"advice": value_json.advice,
+            "kinds": value_json.advice | map(attribute="kind") | list,
+            "doses": value_json.advice | selectattr("kind", "eq", "dose") | map(attribute="text") | list,
+            "ts": value_json.ts} | tojson }}
+      icon: mdi:lightbulb-on-outline
+      unit_of_measurement: "items"
     # --- is Robigus itself alive? ---------------------------------------------------------------
     - name: "Demeter robigus status"
       unique_id: demeter_robigus_status
@@ -121,3 +137,33 @@ automation:
           - service: persistent_notification.dismiss
             data:
               notification_id: demeter_pomona_0001
+
+  # The tower's advice changed: one notification listing it (a hand dose the
+  # advise-role brain asks for, a plant that does not fit the unit's targets,
+  # the suggested compromise), dismissed when Robigus has nothing to say.
+  - id: demeter_pomona_0001_advice_changed
+    alias: Demeter — pomona-0001 advice changed
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.demeter_pomona_0001_advice
+        attribute: advice
+    action:
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.demeter_pomona_0001_advice
+                above: 0
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  notification_id: demeter_pomona_0001_advice
+                  title: "Demeter — pomona-0001: {{ states('sensor.demeter_pomona_0001_advice') }} recommendation(s)"
+                  message: >-
+                    {% for a in state_attr('sensor.demeter_pomona_0001_advice', 'advice') %}
+                    - {{ a.kind }}{% if a.crop %} ({{ a.crop }}){% endif %}: {{ a.text }}
+                    {% endfor %}
+        default:
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: demeter_pomona_0001_advice
