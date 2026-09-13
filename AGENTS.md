@@ -39,7 +39,7 @@ side. The header is how you tell which behavior is actually live:
   project; control lives in HA smart plugs, deliberately NOT in the GIGA
   firmware, which reboots for OTA):
   - [pomona-schedule.md](pomona-schedule.md) - runbook
-  - [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml) - drop-in package
+  - [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml) - drop-in package (2.0.0: the v2 wire `ceres/pomona-0001/…`, ceres #295)
   - [packages/pomona_telemetry.yaml](packages/pomona_telemetry.yaml) - tower
     telemetry into HA over MQTT (no firmware change needed - the GIGA already
     publishes) plus the level interlock; note the probe is a TOP-UP gauge and

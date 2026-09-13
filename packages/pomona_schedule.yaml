@@ -1,9 +1,15 @@
 # Pomona tower — pump + grow-light scheduling
-# version: 1.3.0
-#   1.3.0 (2026-09-11) relay the pump plug's power to MQTT for Demeter (#278, demeter ADR-0005)
+# version: 2.1.0
+#   2.1.0 (2026-09-13) the plug entities carry the unit id (owner): switch.pomona_0001_pump, switch.pomona_0001_light,
+#         sensor.pomona_0001_pump_power — rename the Z-Wave entities in HA (Settings → Entities) when deploying this version
+#   2.0.1 (2026-09-12) the topic root is ceres/ (ceres ADR-0012: Demeter became Ceres)
+#   2.0.0 (2026-09-12) the v2 wire (ceres card #295, ADR-0008): relays follow
+#                      ceres/pomona-0001/actuator/<pump|light>/state, the plug's watts go to
+#                      actuator/pump/power_w, availability from sys/status; entity ids unchanged
+#   1.3.0 (2026-09-11) relay the pump plug's power to MQTT for Ceres (#278, ceres ADR-0005)
 #   1.2.0 (2026-09-11) pump-not-pumping alert: requested on but no plug power (#278)
 #   1.1.0 (2026-09-03) relay reconciliation #277 (request mirrors + 5-min re-assert)
-#   1.0.1 (2026-09-01) lamp entity fix: switch.office_pomona_lamps (PR #17)
+#   1.0.1 (2026-09-01) lamp entity fix: switch.pomona_0001_light (PR #17)
 #   1.0.0 (2026-09-01) initial: duty cycle, photoperiod, relays, handover
 # Bump on EVERY applied change (owner rule 2026-09-03): patch for fixes,
 # minor for features — and update this header's history with it. The version
@@ -101,8 +107,8 @@ input_boolean:
     # ON  = the GIGA owns it; HA just relays its requests to the plugs.
     #
     # This is the cutover switch, and it is reversible in one click. Turn it
-    # on when the firmware starts publishing pomona/pump/request; turn it off
-    # and HA resumes its own schedule immediately.
+    # on when the firmware publishes ceres/pomona-0001/actuator/pump/state;
+    # turn it off and HA resumes its own schedule immediately.
 
 # Mirrors of the firmware's RETAINED control requests (#277). The relay
 # automations below are edge-triggered; these sensors carry the CURRENT
@@ -113,19 +119,19 @@ mqtt:
   binary_sensor:
     - name: Pomona pump requested
       unique_id: pomona_pump_requested
-      state_topic: pomona/pump/request
+      state_topic: ceres/pomona-0001/actuator/pump/state
       payload_on: "on"
       payload_off: "off"
-      availability_topic: pomona/unit/status
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       icon: mdi:water-pump
     - name: Pomona light requested
       unique_id: pomona_light_requested
-      state_topic: pomona/light/request
+      state_topic: ceres/pomona-0001/actuator/light/state
       payload_on: "on"
       payload_off: "off"
-      availability_topic: pomona/unit/status
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       icon: mdi:lightbulb-auto
@@ -181,7 +187,7 @@ automation:
     action:
       - service: switch.turn_on
         target:
-          entity_id: switch.pomona_pump
+          entity_id: switch.pomona_0001_pump
 
   - id: pomona_pump_on_half_hour
     alias: Pomona pump ON (half past, establishment only)
@@ -206,7 +212,7 @@ automation:
     action:
       - service: switch.turn_on
         target:
-          entity_id: switch.pomona_pump
+          entity_id: switch.pomona_0001_pump
 
   - id: pomona_pump_off
     alias: Pomona pump OFF (15 minutes after each start)
@@ -228,7 +234,7 @@ automation:
     action:
       - service: switch.turn_off
         target:
-          entity_id: switch.pomona_pump
+          entity_id: switch.pomona_0001_pump
 
   # -------------------------------------------------------------------------
   # GROW LIGHT
@@ -251,7 +257,7 @@ automation:
     action:
       - service: switch.turn_on
         target:
-          entity_id: switch.office_pomona_lamps
+          entity_id: switch.pomona_0001_light
 
   - id: pomona_light_on
     alias: Pomona light ON 08:00
@@ -271,7 +277,7 @@ automation:
     action:
       - service: switch.turn_on
         target:
-          entity_id: switch.office_pomona_lamps
+          entity_id: switch.pomona_0001_light
 
   - id: pomona_light_off
     alias: Pomona light OFF 20:00
@@ -291,7 +297,7 @@ automation:
     action:
       - service: switch.turn_off
         target:
-          entity_id: switch.office_pomona_lamps
+          entity_id: switch.pomona_0001_light
 
   - id: pomona_light_off_failsafe
     alias: Pomona light OFF failsafe (23:00)
@@ -305,12 +311,12 @@ automation:
         at: "23:00:00"
     condition:
       - condition: state
-        entity_id: switch.office_pomona_lamps
+        entity_id: switch.pomona_0001_light
         state: "on"
     action:
       - service: switch.turn_off
         target:
-          entity_id: switch.office_pomona_lamps
+          entity_id: switch.pomona_0001_light
 
   # -------------------------------------------------------------------------
   # FIRMWARE IN COMMAND — event -> HA -> Fibaro
@@ -321,10 +327,12 @@ automation:
   # the device that holds the sensors, while actuation stays in certified
   # smart plugs and no mains wiring is touched.
   #
-  # CONTRACT (must match firmware and docs/mqtt.md):
-  #   pomona/pump/request   "on" | "off"   RETAINED, QoS 1
-  #   pomona/light/request  "on" | "off"   RETAINED, QoS 1
-  #   pomona/pump/reason    free text, why the last request was made
+  # CONTRACT (ceres ADR-0008, pomona firmware 2.0.0):
+  #   ceres/pomona-0001/actuator/pump/state   "on" | "off"   RETAINED, QoS 1
+  #   ceres/pomona-0001/actuator/light/state  "on" | "off"   RETAINED, QoS 1
+  #   ceres/pomona-0001/actuator/pump/reason  why the node decided what it did
+  # Before the firmware is 2.0.0 the broker's republish bridge mirrors the v1
+  # pump/request + light/request onto these topics, so this package works either way.
   #
   # RETAINED is load-bearing: on an HA restart the broker replays the current
   # request immediately, so HA does not sit with the plugs in a stale state
@@ -332,12 +340,12 @@ automation:
   # -------------------------------------------------------------------------
   - id: pomona_pump_follow_firmware
     alias: Pomona pump — follow firmware request
-    description: Relays pomona/pump/request onto the Fibaro plug.
+    description: Relays ceres/pomona-0001/actuator/pump/state onto the Fibaro plug.
     mode: queued
     max: 10
     trigger:
       - platform: mqtt
-        topic: pomona/pump/request
+        topic: ceres/pomona-0001/actuator/pump/state
     condition:
       - condition: state
         entity_id: binary_sensor.pomona_firmware_in_command
@@ -356,23 +364,23 @@ automation:
                 state: "off"
               - service: switch.turn_on
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
           - conditions:
               - condition: template
                 value_template: "{{ trigger.payload | lower == 'off' }}"
             sequence:
               - service: switch.turn_off
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
 
   - id: pomona_light_follow_firmware
     alias: Pomona light — follow firmware request
-    description: Relays pomona/light/request onto the Fibaro plug.
+    description: Relays ceres/pomona-0001/actuator/light/state onto the Fibaro plug.
     mode: queued
     max: 10
     trigger:
       - platform: mqtt
-        topic: pomona/light/request
+        topic: ceres/pomona-0001/actuator/light/state
     condition:
       - condition: state
         entity_id: binary_sensor.pomona_firmware_in_command
@@ -385,14 +393,14 @@ automation:
             sequence:
               - service: switch.turn_on
                 target:
-                  entity_id: switch.office_pomona_lamps
+                  entity_id: switch.pomona_0001_light
           - conditions:
               - condition: template
                 value_template: "{{ trigger.payload | lower == 'off' }}"
             sequence:
               - service: switch.turn_off
                 target:
-                  entity_id: switch.office_pomona_lamps
+                  entity_id: switch.pomona_0001_light
 
   # -------------------------------------------------------------------------
   # RECONCILIATION (#277) — the relays above are edge-triggered: they act once
@@ -428,7 +436,7 @@ automation:
                 entity_id: binary_sensor.pomona_pump_requested
                 state: "on"
               - condition: state
-                entity_id: switch.pomona_pump
+                entity_id: switch.pomona_0001_pump
                 state: "off"
               # Same belt-and-braces interlock as the edge relay.
               - condition: state
@@ -437,41 +445,41 @@ automation:
             sequence:
               - service: switch.turn_on
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
           - conditions:
               - condition: state
                 entity_id: binary_sensor.pomona_pump_requested
                 state: "off"
               - condition: state
-                entity_id: switch.pomona_pump
+                entity_id: switch.pomona_0001_pump
                 state: "on"
             sequence:
               - service: switch.turn_off
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
       - choose:
           - conditions:
               - condition: state
                 entity_id: binary_sensor.pomona_light_requested
                 state: "on"
               - condition: state
-                entity_id: switch.office_pomona_lamps
+                entity_id: switch.pomona_0001_light
                 state: "off"
             sequence:
               - service: switch.turn_on
                 target:
-                  entity_id: switch.office_pomona_lamps
+                  entity_id: switch.pomona_0001_light
           - conditions:
               - condition: state
                 entity_id: binary_sensor.pomona_light_requested
                 state: "off"
               - condition: state
-                entity_id: switch.office_pomona_lamps
+                entity_id: switch.pomona_0001_light
                 state: "on"
             sequence:
               - service: switch.turn_off
                 target:
-                  entity_id: switch.office_pomona_lamps
+                  entity_id: switch.pomona_0001_light
 
   - id: pomona_command_handover
     alias: Pomona — control handed back to HA
@@ -506,15 +514,15 @@ automation:
   # (15 min per hour by day, per two hours at night), so this must never key
   # on the clock or on "no power" alone — an idle interval is not a fault.
   # It keys on INTENDED state only, and needs the mismatch to hold 10 min:
-  #   (a) switch.pomona_pump is ON (HA believes the plug is on — whichever
+  #   (a) switch.pomona_0001_pump is ON (HA believes the plug is on — whichever
   #       schedule drives it) but the Fibaro reads under 2 W (~4.7 W when the
   #       pump runs): plug tripped, pump dead or dry, wiring.
   #   (b) the GIGA is in command and has requested "on" but the plug switch
   #       is still OFF: the relay path is broken (HA not following).
   # An unavailable power sensor is ignored (a Z-Wave hiccup is not a dry
   # pump) — the plug going unavailable is its own zwave_js signal. This
-  # matters twice: no watering, and Demeter (the k3s dosing brain) needs
-  # the pump to have run before it judges a dose — since demeter 0.5.1 it
+  # matters twice: no watering, and Ceres (the k3s dosing brain) needs
+  # the pump to have run before it judges a dose — since ceres 0.5.1 it
   # reads this same plug power (relayed below) and refuses to dose while
   # the pump draws nothing. Cleared automatically when power returns.
   # -------------------------------------------------------------------------
@@ -529,16 +537,16 @@ automation:
       - id: no_power
         platform: template
         value_template: >-
-          {{ is_state('switch.pomona_pump', 'on')
-             and states('sensor.pomona_pump_power') not in ['unknown', 'unavailable']
-             and (states('sensor.pomona_pump_power') | float(0)) < 2 }}
+          {{ is_state('switch.pomona_0001_pump', 'on')
+             and states('sensor.pomona_0001_pump_power') not in ['unknown', 'unavailable']
+             and (states('sensor.pomona_0001_pump_power') | float(0)) < 2 }}
         for: "00:10:00"
       - id: relay
         platform: template
         value_template: >-
           {{ is_state('binary_sensor.pomona_firmware_in_command', 'on')
              and is_state('binary_sensor.pomona_pump_requested', 'on')
-             and is_state('switch.pomona_pump', 'off') }}
+             and is_state('switch.pomona_0001_pump', 'off') }}
         for: "00:10:00"
     action:
       - service: persistent_notification.create
@@ -546,20 +554,20 @@ automation:
           title: Pomona — pump should be running but is NOT
           message: >-
             {% if trigger.id == 'no_power' %}
-            switch.pomona_pump has been ON for 10 minutes but the plug draws
-            only {{ states('sensor.pomona_pump_power') }} W — the pump is not
+            switch.pomona_0001_pump has been ON for 10 minutes but the plug draws
+            only {{ states('sensor.pomona_0001_pump_power') }} W — the pump is not
             running (tripped plug, dead or dry pump, wiring).
             {% else %}
             The GIGA is in command and has requested the pump ON for 10
-            minutes, but switch.pomona_pump is still off — the relay path
+            minutes, but switch.pomona_0001_pump is still off — the relay path
             (HA -> Fibaro) is not following the request.
             {% endif %}
-            The tower is not being watered; Demeter sees the same 0 W and will
+            The tower is not being watered; Ceres sees the same 0 W and will
             not dose until power returns. (firmware in command:
             {{ states('binary_sensor.pomona_firmware_in_command') }}, requested:
             {{ states('binary_sensor.pomona_pump_requested') }}, switch:
-            {{ states('switch.pomona_pump') }}, power:
-            {{ states('sensor.pomona_pump_power') }} W)
+            {{ states('switch.pomona_0001_pump') }}, power:
+            {{ states('sensor.pomona_0001_pump_power') }} W)
           notification_id: pomona_pump_not_pumping
 
   - id: pomona_pump_pumping_again
@@ -568,7 +576,7 @@ automation:
     mode: single
     trigger:
       - platform: numeric_state
-        entity_id: sensor.pomona_pump_power
+        entity_id: sensor.pomona_0001_pump_power
         above: 2
     action:
       - service: persistent_notification.dismiss
@@ -576,31 +584,33 @@ automation:
           notification_id: pomona_pump_not_pumping
 
   # -------------------------------------------------------------------------
-  # PUMP POWER -> MQTT (owner 2026-09-11, #278; demeter 0.5.1 / ADR-0005).
-  # Demeter judges a dose only on a MIXED tank. Its only evidence of
+  # PUMP POWER -> MQTT (owner 2026-09-11, #278; ceres 0.5.1 / ADR-0005).
+  # Ceres judges a dose only on a MIXED tank. Its only evidence of
   # circulation used to be the firmware's REQUEST — and on 2026-09-11 it
   # counted ten minutes of "request on" while HA (firmware control still
   # off) drove the plug on its own schedule. The plug's measured power is
-  # the truth, so relay it: retained pomona/pump/power = the Fibaro's watts,
-  # republished on every change, at HA start and every 5 minutes (Demeter
+  # the truth, so relay it: retained ceres/pomona-0001/actuator/pump/power_w = the Fibaro's watts,
+  # republished on every change, at HA start and every 5 minutes (Ceres
   # treats a reading older than 15 min as unknown and falls back to the
-  # request). Retained like the requests: a restarted Demeter learns the
+  # request). Retained like the requests: a restarted Ceres learns the
   # current state at once. Unknown/unavailable is not published — a stale
   # retained value is worse than the fallback.
-  # Broker: the homeassistant user needs `publish pomona/pump/power`
-  # (gitops platform/mqtt — live mnesia rule + acl.conf DR mirror).
+  # Broker: the homeassistant user needs `publish ceres/+/actuator/+/power_w`
+  # (gitops platform/mqtt — live mnesia rule + acl.conf DR mirror, #295).
+  # ORDER: switch this package to 2.0.0 only once Vertumnus is on contract v2
+  # (it reads the watts on the v2 topic; the bridge does not mirror v2 -> v1 here).
   # -------------------------------------------------------------------------
   - id: pomona_pump_power_to_mqtt
-    alias: Pomona — relay pump plug power to MQTT (for Demeter)
+    alias: Pomona — relay pump plug power to MQTT (for Ceres)
     description: >-
-      Publishes sensor.pomona_pump_power as retained pomona/pump/power on
-      every change, at HA start and every 5 minutes, so Demeter can confirm
+      Publishes sensor.pomona_0001_pump_power as retained ceres/pomona-0001/actuator/pump/power_w on
+      every change, at HA start and every 5 minutes, so Ceres can confirm
       the pump actually ran before judging a dose.
     mode: queued
     max: 10
     trigger:
       - platform: state
-        entity_id: sensor.pomona_pump_power
+        entity_id: sensor.pomona_0001_pump_power
       - platform: homeassistant
         event: start
       - platform: time_pattern
@@ -608,11 +618,11 @@ automation:
     condition:
       - condition: template
         value_template: >-
-          {{ states('sensor.pomona_pump_power') not in ['unknown', 'unavailable'] }}
+          {{ states('sensor.pomona_0001_pump_power') not in ['unknown', 'unavailable'] }}
     action:
       - service: mqtt.publish
         data:
-          topic: pomona/pump/power
-          payload: "{{ states('sensor.pomona_pump_power') | float(0) | round(1) }}"
+          topic: ceres/pomona-0001/actuator/pump/power_w
+          payload: "{{ states('sensor.pomona_0001_pump_power') | float(0) | round(1) }}"
           qos: 1
           retain: true

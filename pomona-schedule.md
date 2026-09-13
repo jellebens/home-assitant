@@ -50,13 +50,23 @@ certified smart plugs and **no mains wiring is touched**.
 
 ### The contract
 
-Must match the firmware and the pomona repo's `docs/mqtt.md`:
+Must match the firmware (pomona `docs/mqtt.md`) and ceres ADR-0008:
 
-| Topic | Payload | Retained |
+| Topic (below `ceres/pomona-0001/`) | Payload | Retained |
 |---|---|---|
-| `pomona/pump/request` | `on` / `off` | **yes**, QoS 1 |
-| `pomona/light/request` | `on` / `off` | **yes**, QoS 1 |
-| `pomona/pump/reason` | free text — why the last request was made | yes |
+| `actuator/pump/state` | `on` / `off` — the node's decision | **yes**, QoS 1 |
+| `actuator/light/state` | `on` / `off` | **yes**, QoS 1 |
+| `actuator/pump/reason` | `schedule` / `level_low` / `settling` / `override` / `boot_safe` | yes |
+| `actuator/pump/power_w` | the plug's watts — **published by HA** for Ceres (ADR-0005) | yes, QoS 1 |
+| `sys/status` | `online` / `offline` (LWT) — every sensor's availability | yes |
+
+Packages 2.0.0 (2026-09-12, ceres card #295) moved to this **v2 wire**
+(ceres repo `docs/adr/0008-mqtt-topic-contract-v2.md`). Until pomona
+firmware 2.0.0 is on the tower the broker's republish bridge mirrors the v1
+`pomona/#` tree onto it, so the packages work with either firmware. The
+`homeassistant` broker user needs `subscribe ceres/#` and `publish
+ceres/+/actuator/+/power_w`; switch to 2.0.0 only after the Vertumnus is
+on contract v2 (it reads the watts on the v2 topic).
 
 **Retained is load-bearing.** On an HA restart the broker replays the current
 request immediately, so HA does not sit with the plugs in a stale state waiting
@@ -132,8 +142,8 @@ configured MQTT entities" from Developer Tools → YAML.
 
 The package assumes:
 
-- `switch.pomona_pump`
-- `switch.office_pomona_lamps` — NOT the standard slug for "Pomona Lamps":
+- `switch.pomona_0001_pump`
+- `switch.pomona_0001_light` — NOT the standard slug for "Pomona Lamps":
   the entity was created as `office_pomena_lamps` and the #255/#256 typo fix
   renamed it to `office_pomona_lamps`, keeping the `office_` prefix. Verified
   against live HA 2026-08-31.

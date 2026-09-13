@@ -1,26 +1,30 @@
 # Pomona tower — telemetry into Home Assistant over MQTT
-# version: 1.0.0
+# version: 2.1.0
+#   2.1.0 (2026-09-13) the plug entities carry the unit id (owner): switch.pomona_0001_pump, switch.pomona_0001_light,
+#         sensor.pomona_0001_pump_power — rename the Z-Wave entities in HA (Settings → Entities) when deploying this version
+#   2.0.1 (2026-09-12) the topic root is ceres/ (ceres ADR-0012: Demeter became Ceres)
+#   2.0.0 (2026-09-12) the v2 wire (ceres card #295, ADR-0008): every topic moves to
+#                      ceres/pomona-0001/… — tele/<zone>/<metric>, sys/status; entity ids unchanged
 #   1.0.0 (2026-09-01) initial: MQTT sensors, settle check, sustained-low inhibit
 # Bump on EVERY applied change (owner rule 2026-09-03): patch for fixes,
 # minor for features — and update this header's history with it.
 # ===========================================================================
-# The GIGA already pushes everything needed. It publishes `pomona/<zone>/<metric>`
-# to the shared EMQX broker (mqtt.lab.local:1883) every 30 s, with a retained
-# `pomona/unit/status` backed by an MQTT Last Will. **No firmware change is
-# required** — HA simply was not subscribing. This package subscribes.
+# The unit publishes `ceres/pomona-0001/tele/<zone>/<metric>` (the v2 wire of
+# the ceres repo's ADR-0008 — pomona firmware 2.0.0; before that the EMQX
+# republish bridge mirrors the v1 tree onto it) to the shared EMQX broker
+# (mqtt.lab.local:1883) every 30 s, with a retained `sys/status` backed by an
+# MQTT Last Will. This package subscribes; the entity ids did not change.
 #
 # Until now the tower telemetry went MQTT -> Telegraf -> InfluxDB -> Grafana
 # and never touched HA, which is why the pump schedule had no level awareness.
 #
 # Companion runbook: ../pomona-schedule.md
-# Topic schema of record: pomona repo `docs/mqtt.md`
+# Topic schema of record: ceres repo `docs/adr/0008-mqtt-topic-contract-v2.md`
 #
 # ---------------------------------------------------------------------------
 # PREREQUISITE: the MQTT integration must be configured on this HA instance,
 # pointed at mqtt.lab.local:1883 with credentials that can SUBSCRIBE to
-# `pomona/#`. The EMQX `pomona` account is ACL-limited to that prefix and is
-# the unit's own publisher account — give HA its own user rather than sharing
-# the device credentials.
+# `ceres/#` (the `homeassistant` broker user, gitops platform/mqtt).
 #
 # ---------------------------------------------------------------------------
 # THE PROBE CANNOT BE REMOUNTED LOWER
@@ -43,7 +47,7 @@
 #
 # Metrics are published NON-retained (see docs/mqtt.md), so after an HA restart
 # each sensor is unknown for up to 30 s until the next publish. That is fine.
-# What matters is `availability_topic`: the retained `pomona/unit/status` plus
+# What matters is `availability_topic`: the retained `sys/status` plus
 # the broker LWT means a crashed or unplugged unit marks every sensor
 # unavailable rather than leaving HA acting on a stale number.
 # ===========================================================================
@@ -52,8 +56,8 @@ mqtt:
   sensor:
     - name: Pomona water level points
       unique_id: pomona_water_level_points
-      state_topic: pomona/water/level_points
-      availability_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/tele/water/level_points
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       unit_of_measurement: pts
@@ -66,8 +70,8 @@ mqtt:
 
     - name: Pomona water temperature
       unique_id: pomona_water_temp_c
-      state_topic: pomona/water/temp_c
-      availability_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/tele/water/temp_c
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: temperature
@@ -76,8 +80,8 @@ mqtt:
 
     - name: Pomona EC
       unique_id: pomona_water_ec_ms_cm
-      state_topic: pomona/water/ec_ms_cm
-      availability_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/tele/water/ec_ms_cm
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       unit_of_measurement: mS/cm
@@ -89,8 +93,8 @@ mqtt:
 
     - name: Pomona pH
       unique_id: pomona_water_ph
-      state_topic: pomona/water/ph
-      availability_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/tele/water/ph
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       state_class: measurement
@@ -99,8 +103,8 @@ mqtt:
 
     - name: Pomona air temperature
       unique_id: pomona_air_temp_c
-      state_topic: pomona/air/temp_c
-      availability_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/tele/air/temp_c
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: temperature
@@ -109,8 +113,8 @@ mqtt:
 
     - name: Pomona air humidity
       unique_id: pomona_air_humidity_pct
-      state_topic: pomona/air/humidity_pct
-      availability_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/tele/air/humidity_pct
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: humidity
@@ -119,8 +123,8 @@ mqtt:
 
     - name: Pomona lux
       unique_id: pomona_air_lux
-      state_topic: pomona/air/lux
-      availability_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/tele/air/lux
+      availability_topic: ceres/pomona-0001/sys/status
       payload_available: online
       payload_not_available: offline
       device_class: illuminance
@@ -132,7 +136,7 @@ mqtt:
   binary_sensor:
     - name: Pomona unit online
       unique_id: pomona_unit_online
-      state_topic: pomona/unit/status
+      state_topic: ceres/pomona-0001/sys/status
       payload_on: online
       payload_off: offline
       device_class: connectivity
@@ -215,7 +219,7 @@ automation:
       # 1. Stop the pump so the tower drains back and the surface stills.
       - service: switch.turn_off
         target:
-          entity_id: switch.pomona_pump
+          entity_id: switch.pomona_0001_pump
       # 2. Let it settle. 5 min is comfortably longer than the tower takes to
       #    drain back, and costs at most one skipped 15-minute cycle.
       - delay: "00:05:00"
@@ -235,7 +239,7 @@ automation:
                   notification_id: pomona_refill
               - service: switch.turn_on
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
           - conditions:
               - condition: numeric_state
                 entity_id: sensor.pomona_water_level_points
@@ -259,13 +263,13 @@ automation:
                   notification_id: pomona_refill
               - service: switch.turn_on
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
         default:
           # Sensor went unknown/unavailable mid-check. Unknown is not empty —
           # resume pumping and leave the confirmed-low flag alone.
           - service: switch.turn_on
             target:
-              entity_id: switch.pomona_pump
+              entity_id: switch.pomona_0001_pump
 
   - id: pomona_refill_cleared
     alias: Pomona — reservoir refilled
