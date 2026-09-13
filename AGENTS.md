@@ -5,9 +5,11 @@ This repository stores Home Assistant operations docs and YAML templates for bat
 **Package versioning (owner rule, 2026-09-03):** every file under `packages/`
 carries a `# version: x.y.z` header with a short history. Bump it on EVERY
 change that gets applied to vesta — patch for fixes, minor for features — and
-add a history line. The repo does not sync to vesta, so the header is how you
-tell which behavior is actually live: compare the header on vesta against git
-before debugging anything.
+add a history line. The repo does not sync to vesta by itself; deploy with
+`scripts/deploy.sh [package]` (scp to `/config/packages`, config check on
+vesta, reload — card #299), which prints the git and vesta headers side by
+side. The header is how you tell which behavior is actually live:
+`scripts/deploy.sh --check` before debugging anything.
 
 ## Project Map
 
@@ -41,7 +43,7 @@ before debugging anything.
   project; control lives in HA smart plugs, deliberately NOT in the GIGA
   firmware, which reboots for OTA):
   - [pomona-schedule.md](pomona-schedule.md) - runbook
-  - [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml) - drop-in package
+  - [packages/pomona_schedule.yaml](packages/pomona_schedule.yaml) - drop-in package (2.0.0: the v2 wire `ceres/pomona-0001/…`, ceres #295)
   - [packages/pomona_telemetry.yaml](packages/pomona_telemetry.yaml) - tower
     telemetry into HA over MQTT (no firmware change needed - the GIGA already
     publishes) plus the level interlock; note the probe is a TOP-UP gauge and
