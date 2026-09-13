@@ -18,7 +18,7 @@
 # copies the files with scp into $VESTA_CONFIG/packages/, validates the config on vesta, reloads
 # (homeassistant.reload_all) or restarts, and prints the deployed headers again as proof.
 set -euo pipefail
-VESTA="${VESTA:-root@vesta.local}"
+VESTA="${VESTA:-admin@vesta.local}"
 VESTA_CONFIG="${VESTA_CONFIG:-/config}"
 HA_URL="${HA_URL:-http://vesta.local:8123}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
