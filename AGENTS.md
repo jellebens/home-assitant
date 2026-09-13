@@ -5,9 +5,11 @@ This repository stores Home Assistant operations docs and YAML templates for bat
 **Package versioning (owner rule, 2026-09-03):** every file under `packages/`
 carries a `# version: x.y.z` header with a short history. Bump it on EVERY
 change that gets applied to vesta — patch for fixes, minor for features — and
-add a history line. The repo does not sync to vesta, so the header is how you
-tell which behavior is actually live: compare the header on vesta against git
-before debugging anything.
+add a history line. The repo does not sync to vesta by itself; deploy with
+`scripts/deploy.sh [package]` (scp to `/config/packages`, config check on
+vesta, reload — card #299), which prints the git and vesta headers side by
+side. The header is how you tell which behavior is actually live:
+`scripts/deploy.sh --check` before debugging anything.
 
 ## Project Map
 
