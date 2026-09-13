@@ -1,0 +1,171 @@
+# version: 1.2.0
+#   1.2.0  2026-09-12  ceres card #297 (ADR-0012): Ceres became Ceres — topics ceres/…, entity ids
+#                      sensor.ceres_*, the package is ceres_robigus.yaml; the controller is Vertumnus.
+#   1.1.0  2026-09-12  ceres card #294: Robigus's ADVICE document (ceres/<unit>/sys/advice —
+#                      target validation against the crop windows, Vertumnus's advise-role
+#                      "add x ml by hand") as a sensor + one persistent notification.
+#   1.0.0  2026-09-12  first cut (ceres card #293): Robigus's alert documents as
+#                      sensors + notifications on new critical / warning conditions.
+#
+# Ceres — Robigus, the plant-health watch (ceres ADR-0009 §6, architecture §8 R2).
+#
+# Robigus is the ONE source of every hydroponic unit's plant-health conditions:
+# it publishes retained JSON on ceres/<unit_id>/sys/alerts
+#   {"unit": "pomona-0001", "ts": "...Z",
+#    "alerts": [{"condition": "pump_not_running", "severity": "critical", "since": 1757600000, "detail": "..."}]}
+# and the fleet's critical ones on ceres/sys/alerts. This package turns those
+# into sensors and notifies on transitions; it decides nothing and sets nothing
+# (that stays with Vertumnuss and the firmware). Broker ACL: the `homeassistant`
+# user needs `subscribe ceres/#` (gitops platform/mqtt/files/acl.conf mirrors it).
+#
+# Add a unit: copy the pomona-0001 sensor + automation pair and change the id.
+
+mqtt:
+  sensor:
+    # --- the tower ---------------------------------------------------------------
+    - name: "Ceres pomona-0001 alerts"
+      unique_id: ceres_pomona_0001_alerts
+      state_topic: ceres/pomona-0001/sys/alerts
+      value_template: "{{ value_json.alerts | count }}"
+      json_attributes_topic: ceres/pomona-0001/sys/alerts
+      json_attributes_template: >-
+        {{ {"alerts": value_json.alerts,
+            "conditions": value_json.alerts | map(attribute="condition") | list,
+            "critical": value_json.alerts | selectattr("severity", "eq", "critical") | map(attribute="condition") | list,
+            "ts": value_json.ts} | tojson }}
+      icon: mdi:shield-alert-outline
+      unit_of_measurement: "conditions"
+    # --- the fleet (every unit's critical conditions) --------------------------------------
+    - name: "Ceres fleet critical alerts"
+      unique_id: ceres_fleet_critical_alerts
+      state_topic: ceres/sys/alerts
+      value_template: "{{ value_json.alerts | count }}"
+      json_attributes_topic: ceres/sys/alerts
+      json_attributes_template: >-
+        {{ {"alerts": value_json.alerts,
+            "units": value_json.alerts | map(attribute="unit") | unique | list,
+            "ts": value_json.ts} | tojson }}
+      icon: mdi:shield-alert
+      unit_of_measurement: "conditions"
+    # --- the tower's advice (what Ceres would like done by hand) -----------------------------
+    - name: "Ceres pomona-0001 advice"
+      unique_id: ceres_pomona_0001_advice
+      state_topic: ceres/pomona-0001/sys/advice
+      value_template: "{{ value_json.advice | count }}"
+      json_attributes_topic: ceres/pomona-0001/sys/advice
+      json_attributes_template: >-
+        {{ {"advice": value_json.advice,
+            "kinds": value_json.advice | map(attribute="kind") | list,
+            "doses": value_json.advice | selectattr("kind", "eq", "dose") | map(attribute="text") | list,
+            "ts": value_json.ts} | tojson }}
+      icon: mdi:lightbulb-on-outline
+      unit_of_measurement: "items"
+    # --- is Robigus itself alive? ---------------------------------------------------------------
+    - name: "Ceres robigus status"
+      unique_id: ceres_robigus_status
+      state_topic: ceres/sys/status/robigus
+      icon: mdi:eye-check-outline
+
+automation:
+  # A new CRITICAL condition anywhere in the fleet: a persistent notification
+  # (and a phone push if a notify service is configured — uncomment and name it).
+  - id: ceres_fleet_critical_raised
+    alias: Ceres — critical plant-health condition
+    description: >-
+      Robigus raised a critical condition (node or brain offline, mixing actuator
+      lost, pump not running). Something kills plants in hours if ignored.
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.ceres_fleet_critical_alerts
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state is not none and trigger.from_state is not none
+             and trigger.to_state.state not in ['unknown', 'unavailable']
+             and (trigger.to_state.state | int(0)) > (trigger.from_state.state | int(0)) }}
+    action:
+      - service: persistent_notification.create
+        data:
+          notification_id: ceres_fleet_critical
+          title: "Ceres — critical: {{ state_attr('sensor.ceres_fleet_critical_alerts', 'units') | join(', ') }}"
+          message: >-
+            {% for a in state_attr('sensor.ceres_fleet_critical_alerts', 'alerts') %}
+            - **{{ a.unit }}** {{ a.condition }} — {{ a.detail }} (since {{ a.since | timestamp_custom('%H:%M', true) }})
+            {% endfor %}
+      # - service: notify.mobile_app_<your_phone>
+      #   data:
+      #     title: "Ceres — critical"
+      #     message: "{{ state_attr('sensor.ceres_fleet_critical_alerts', 'alerts') | map(attribute='condition') | join(', ') }}"
+
+  # Every critical condition cleared: dismiss the notification.
+  - id: ceres_fleet_critical_cleared
+    alias: Ceres — critical conditions cleared
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.ceres_fleet_critical_alerts
+        below: 1
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: ceres_fleet_critical
+
+  # The tower: any change in its set of conditions refreshes one notification
+  # listing them (warnings included), dismissed when the list is empty.
+  - id: ceres_pomona_0001_alerts_changed
+    alias: Ceres — pomona-0001 conditions changed
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.ceres_pomona_0001_alerts
+        attribute: conditions
+    action:
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.ceres_pomona_0001_alerts
+                above: 0
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  notification_id: ceres_pomona_0001
+                  title: "Ceres — pomona-0001: {{ states('sensor.ceres_pomona_0001_alerts') }} condition(s)"
+                  message: >-
+                    {% for a in state_attr('sensor.ceres_pomona_0001_alerts', 'alerts') %}
+                    - {{ a.condition }} ({{ a.severity }}) — {{ a.detail }}, since {{ a.since | timestamp_custom('%d %b %H:%M', true) }}
+                    {% endfor %}
+        default:
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: ceres_pomona_0001
+
+  # The tower's advice changed: one notification listing it (a hand dose the
+  # advise-role brain asks for, a plant that does not fit the unit's targets,
+  # the suggested compromise), dismissed when Robigus has nothing to say.
+  - id: ceres_pomona_0001_advice_changed
+    alias: Ceres — pomona-0001 advice changed
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.ceres_pomona_0001_advice
+        attribute: advice
+    action:
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.ceres_pomona_0001_advice
+                above: 0
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  notification_id: ceres_pomona_0001_advice
+                  title: "Ceres — pomona-0001: {{ states('sensor.ceres_pomona_0001_advice') }} recommendation(s)"
+                  message: >-
+                    {% for a in state_attr('sensor.ceres_pomona_0001_advice', 'advice') %}
+                    - {{ a.kind }}{% if a.crop %} ({{ a.crop }}){% endif %}: {{ a.text }}
+                    {% endfor %}
+        default:
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: ceres_pomona_0001_advice

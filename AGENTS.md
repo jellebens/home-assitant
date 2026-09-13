@@ -35,6 +35,10 @@ side. The header is how you tell which behavior is actually live:
   wedge it for hours — #212):
   - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook
   - [packages/bluetti_selfheal.yaml](packages/bluetti_selfheal.yaml) — drop-in package
+- Ceres — Robigus plant-health alerts + advice as HA sensors + notifications (one
+  source of every hydroponic unit's conditions; ceres cards #293/#294):
+  - [ceres-robigus.md](ceres-robigus.md) - runbook
+  - [packages/ceres_robigus.yaml](packages/ceres_robigus.yaml) - drop-in package
 - Pomona tower pump + grow-light scheduling (first automation in the Pomona
   project; control lives in HA smart plugs, deliberately NOT in the GIGA
   firmware, which reboots for OTA):
