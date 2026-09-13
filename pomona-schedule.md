@@ -142,8 +142,8 @@ configured MQTT entities" from Developer Tools → YAML.
 
 The package assumes:
 
-- `switch.pomona_pump`
-- `switch.office_pomona_lamps` — NOT the standard slug for "Pomona Lamps":
+- `switch.pomona_0001_pump`
+- `switch.pomona_0001_light` — NOT the standard slug for "Pomona Lamps":
   the entity was created as `office_pomena_lamps` and the #255/#256 typo fix
   renamed it to `office_pomona_lamps`, keeping the `office_` prefix. Verified
   against live HA 2026-08-31.

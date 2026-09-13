@@ -1,5 +1,7 @@
 # Pomona tower — telemetry into Home Assistant over MQTT
-# version: 2.0.1
+# version: 2.1.0
+#   2.1.0 (2026-09-13) the plug entities carry the unit id (owner): switch.pomona_0001_pump, switch.pomona_0001_light,
+#         sensor.pomona_0001_pump_power — rename the Z-Wave entities in HA (Settings → Entities) when deploying this version
 #   2.0.1 (2026-09-12) the topic root is ceres/ (ceres ADR-0012: Demeter became Ceres)
 #   2.0.0 (2026-09-12) the v2 wire (ceres card #295, ADR-0008): every topic moves to
 #                      ceres/pomona-0001/… — tele/<zone>/<metric>, sys/status; entity ids unchanged
@@ -217,7 +219,7 @@ automation:
       # 1. Stop the pump so the tower drains back and the surface stills.
       - service: switch.turn_off
         target:
-          entity_id: switch.pomona_pump
+          entity_id: switch.pomona_0001_pump
       # 2. Let it settle. 5 min is comfortably longer than the tower takes to
       #    drain back, and costs at most one skipped 15-minute cycle.
       - delay: "00:05:00"
@@ -237,7 +239,7 @@ automation:
                   notification_id: pomona_refill
               - service: switch.turn_on
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
           - conditions:
               - condition: numeric_state
                 entity_id: sensor.pomona_water_level_points
@@ -261,13 +263,13 @@ automation:
                   notification_id: pomona_refill
               - service: switch.turn_on
                 target:
-                  entity_id: switch.pomona_pump
+                  entity_id: switch.pomona_0001_pump
         default:
           # Sensor went unknown/unavailable mid-check. Unknown is not empty —
           # resume pumping and leave the confirmed-low flag alone.
           - service: switch.turn_on
             target:
-              entity_id: switch.pomona_pump
+              entity_id: switch.pomona_0001_pump
 
   - id: pomona_refill_cleared
     alias: Pomona — reservoir refilled
