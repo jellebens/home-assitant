@@ -1,4 +1,12 @@
-# version: 1.2.0
+# version: 1.3.0
+#   1.3.0  2026-09-14  ceres card #302: the trace across Home Assistant. Every sensor keeps the
+#                      document's `traceparent` as an attribute (Ceres puts it in while a trace is
+#                      live); after notifying, each automation publishes a small non-retained ack
+#                      (sys/alerts/ack, sys/advice/ack, ceres/sys/alerts/ack) echoing it, so Robigus
+#                      puts "HA notified" under the tick that raised the condition — HA does not
+#                      trace, it echoes, like the node does for a dose. Needs publish on those three
+#                      topics in the homeassistant broker ACL. A future rest_command to a Ceres API
+#                      passes the same attribute as the `traceparent` header (see the note below).
 #   1.2.0  2026-09-12  ceres card #297 (ADR-0012): Ceres became Ceres — topics ceres/…, entity ids
 #                      sensor.ceres_*, the package is ceres_robigus.yaml; the controller is Vertumnus.
 #   1.1.0  2026-09-12  ceres card #294: Robigus's ADVICE document (ceres/<unit>/sys/advice —
@@ -19,6 +27,17 @@
 # user needs `subscribe ceres/#` (gitops platform/mqtt/files/acl.conf mirrors it).
 #
 # Add a unit: copy the pomona-0001 sensor + automation pair and change the id.
+#
+# Tracing (ceres #302): a document's `traceparent` is kept as a sensor attribute, so any
+# automation can hand it on. Calling a Ceres API from here (none yet — the APIs are
+# in-cluster only, ceres architecture §9.8) would pass it as an HTTP header:
+#   rest_command:
+#     ceres_probe:
+#       url: http://vertumnus-pomona-0001.ceres.svc.cluster.local:8080/ph/probe
+#       method: put
+#       headers:
+#         traceparent: "{{ state_attr('sensor.ceres_pomona_0001_alerts', 'traceparent') }}"
+# and the Vertumnus's `vertumnus.api` server span joins the alert's trace.
 
 mqtt:
   sensor:
@@ -32,7 +51,8 @@ mqtt:
         {{ {"alerts": value_json.alerts,
             "conditions": value_json.alerts | map(attribute="condition") | list,
             "critical": value_json.alerts | selectattr("severity", "eq", "critical") | map(attribute="condition") | list,
-            "ts": value_json.ts} | tojson }}
+            "ts": value_json.ts,
+            "traceparent": value_json.get("traceparent")} | tojson }}
       icon: mdi:shield-alert-outline
       unit_of_measurement: "conditions"
     # --- the fleet (every unit's critical conditions) --------------------------------------
@@ -44,7 +64,8 @@ mqtt:
       json_attributes_template: >-
         {{ {"alerts": value_json.alerts,
             "units": value_json.alerts | map(attribute="unit") | unique | list,
-            "ts": value_json.ts} | tojson }}
+            "ts": value_json.ts,
+            "traceparent": value_json.get("traceparent")} | tojson }}
       icon: mdi:shield-alert
       unit_of_measurement: "conditions"
     # --- the tower's advice (what Ceres would like done by hand) -----------------------------
@@ -57,7 +78,8 @@ mqtt:
         {{ {"advice": value_json.advice,
             "kinds": value_json.advice | map(attribute="kind") | list,
             "doses": value_json.advice | selectattr("kind", "eq", "dose") | map(attribute="text") | list,
-            "ts": value_json.ts} | tojson }}
+            "ts": value_json.ts,
+            "traceparent": value_json.get("traceparent")} | tojson }}
       icon: mdi:lightbulb-on-outline
       unit_of_measurement: "items"
     # --- is Robigus itself alive? ---------------------------------------------------------------
@@ -93,6 +115,18 @@ automation:
             {% for a in state_attr('sensor.ceres_fleet_critical_alerts', 'alerts') %}
             - **{{ a.unit }}** {{ a.condition }} — {{ a.detail }} (since {{ a.since | timestamp_custom('%H:%M', true) }})
             {% endfor %}
+      # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
+      # this under the tick that raised the condition. Non-retained: an ack is an event.
+      - service: mqtt.publish
+        data:
+          topic: ceres/sys/alerts/ack
+          qos: 1
+          retain: false
+          payload: >-
+            {{ {"ts": now().isoformat(), "by": "homeassistant",
+                "action": "persistent_notification.create", "notification_id": "ceres_fleet_critical",
+                "units": trigger.to_state.attributes.get("units", []), "conditions": trigger.to_state.attributes.get("alerts", []) | map(attribute="condition") | list,
+                "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
       # - service: notify.mobile_app_<your_phone>
       #   data:
       #     title: "Ceres — critical"
@@ -110,6 +144,18 @@ automation:
       - service: persistent_notification.dismiss
         data:
           notification_id: ceres_fleet_critical
+      # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
+      # this under the tick that raised the condition. Non-retained: an ack is an event.
+      - service: mqtt.publish
+        data:
+          topic: ceres/sys/alerts/ack
+          qos: 1
+          retain: false
+          payload: >-
+            {{ {"ts": now().isoformat(), "by": "homeassistant",
+                "action": "persistent_notification.dismiss", "notification_id": "ceres_fleet_critical",
+                "units": trigger.to_state.attributes.get("units", []), "conditions": trigger.to_state.attributes.get("alerts", []) | map(attribute="condition") | list,
+                "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
 
   # The tower: any change in its set of conditions refreshes one notification
   # listing them (warnings included), dismissed when the list is empty.
@@ -135,10 +181,34 @@ automation:
                     {% for a in state_attr('sensor.ceres_pomona_0001_alerts', 'alerts') %}
                     - {{ a.condition }} ({{ a.severity }}) — {{ a.detail }}, since {{ a.since | timestamp_custom('%d %b %H:%M', true) }}
                     {% endfor %}
+              # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
+              # this under the tick that raised the condition. Non-retained: an ack is an event.
+              - service: mqtt.publish
+                data:
+                  topic: ceres/pomona-0001/sys/alerts/ack
+                  qos: 1
+                  retain: false
+                  payload: >-
+                    {{ {"unit": "pomona-0001", "ts": now().isoformat(), "by": "homeassistant",
+                        "action": "persistent_notification.create", "notification_id": "ceres_pomona_0001",
+                        "conditions": trigger.to_state.attributes.get("conditions", []),
+                        "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
         default:
           - service: persistent_notification.dismiss
             data:
               notification_id: ceres_pomona_0001
+          # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
+          # this under the tick that raised the condition. Non-retained: an ack is an event.
+          - service: mqtt.publish
+            data:
+              topic: ceres/pomona-0001/sys/alerts/ack
+              qos: 1
+              retain: false
+              payload: >-
+                {{ {"unit": "pomona-0001", "ts": now().isoformat(), "by": "homeassistant",
+                    "action": "persistent_notification.dismiss", "notification_id": "ceres_pomona_0001",
+                    "conditions": trigger.to_state.attributes.get("conditions", []),
+                    "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
 
   # The tower's advice changed: one notification listing it (a hand dose the
   # advise-role brain asks for, a plant that does not fit the unit's targets,
@@ -165,7 +235,31 @@ automation:
                     {% for a in state_attr('sensor.ceres_pomona_0001_advice', 'advice') %}
                     - {{ a.kind }}{% if a.crop %} ({{ a.crop }}){% endif %}: {{ a.text }}
                     {% endfor %}
+              # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
+              # this under the tick that raised the condition. Non-retained: an ack is an event.
+              - service: mqtt.publish
+                data:
+                  topic: ceres/pomona-0001/sys/advice/ack
+                  qos: 1
+                  retain: false
+                  payload: >-
+                    {{ {"unit": "pomona-0001", "ts": now().isoformat(), "by": "homeassistant",
+                        "action": "persistent_notification.create", "notification_id": "ceres_pomona_0001_advice",
+                        "items": trigger.to_state.attributes.get("kinds", []),
+                        "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
         default:
           - service: persistent_notification.dismiss
             data:
               notification_id: ceres_pomona_0001_advice
+          # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
+          # this under the tick that raised the condition. Non-retained: an ack is an event.
+          - service: mqtt.publish
+            data:
+              topic: ceres/pomona-0001/sys/advice/ack
+              qos: 1
+              retain: false
+              payload: >-
+                {{ {"unit": "pomona-0001", "ts": now().isoformat(), "by": "homeassistant",
+                    "action": "persistent_notification.dismiss", "notification_id": "ceres_pomona_0001_advice",
+                    "items": trigger.to_state.attributes.get("kinds", []),
+                    "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
