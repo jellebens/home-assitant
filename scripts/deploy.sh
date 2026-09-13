@@ -8,7 +8,7 @@
 #
 # Access — one of:
 #   ssh to vesta (HAOS "Advanced SSH & Web Terminal" add-on or the SSH add-on; key-based):
-#     VESTA=root@vesta.local         (default)      VESTA_CONFIG=/config   (default)
+#     VESTA=admin@vesta.local        (default)      VESTA_CONFIG=/config   (default)
 #   HA REST for the reload (optional, avoids the full restart): export HA_TOKEN=<long-lived token>
 #     HA_URL=http://vesta.local:8123 (default). The token is read from the environment only; never
 #     printed, never written. Without it the script uses `ha core check` + reload via the CLI, or
