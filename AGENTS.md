@@ -36,7 +36,12 @@ side. The header is how you tell which behavior is actually live:
   - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook
   - [packages/bluetti_selfheal.yaml](packages/bluetti_selfheal.yaml) — drop-in package
 - Ceres — Robigus plant-health alerts + advice as HA sensors + notifications (one
-  source of every hydroponic unit's conditions; ceres cards #293/#294):
+  source of every hydroponic unit's conditions; ceres cards #293/#294), and the
+  trace through HA (ceres #302, ADR-0013): every sensor keeps the document's
+  `traceparent`, every notification is acknowledged on `…/sys/alerts/ack` /
+  `…/sys/advice/ack` with the rendered title + message, so Jaeger shows
+  "alert → HA notified" as one trace (package 1.4.0; the `homeassistant` broker
+  user needs publish on the three ack topics):
   - [ceres-robigus.md](ceres-robigus.md) - runbook
   - [packages/ceres_robigus.yaml](packages/ceres_robigus.yaml) - drop-in package
 - Pomona tower pump + grow-light scheduling (first automation in the Pomona
