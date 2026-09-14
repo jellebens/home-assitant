@@ -19,8 +19,8 @@ hours. This package only *shows and notifies*; nothing here actuates.
 
 | entity | source | state |
 |---|---|---|
-| `sensor.ceres_pomona_0001_alerts` | `ceres/pomona-0001/sys/alerts` | number of active conditions; attributes `alerts`, `conditions`, `critical`, `ts` |
-| `sensor.ceres_fleet_critical_alerts` | `ceres/sys/alerts` | number of critical conditions fleet-wide; attributes `alerts`, `units` |
+| `sensor.ceres_pomona_0001_alerts` | `ceres/pomona-0001/sys/alerts` | number of active conditions; attributes `alerts`, `conditions`, `critical`, `ts`, `traceparent` |
+| `sensor.ceres_fleet_critical_alerts` | `ceres/sys/alerts` | number of critical conditions fleet-wide; attributes `alerts`, `units`, `traceparent` |
 | `sensor.ceres_robigus_status` | `ceres/sys/status/robigus` | `online` / `offline` (Robigus's own LWT) |
 | `sensor.ceres_pomona_0001_advice` | `ceres/pomona-0001/sys/advice` | number of recommendations; attributes `advice`, `kinds`, `doses` (the advise-role brain's "add x ml by hand") |
 
@@ -36,8 +36,11 @@ a hand dose Vertumnus asks for in the `advise` role. A phone push is a commented
 ## Install (vesta)
 
 1. **Broker ACL:** the `homeassistant` EMQX user needs `subscribe ceres/#`
-   (live rule via the admin API; the DR mirror is gitops
-   `platform/mqtt/files/acl.conf`). Without it the sensors stay `unknown`.
+   and, since 1.3.0, `publish ceres/+/sys/alerts/ack`, `ceres/+/sys/advice/ack`
+   and `ceres/sys/alerts/ack` (live rule via the admin API; the DR mirror is
+   gitops `platform/mqtt/files/acl.conf`; the contract is ceres ADR-0008's ACL
+   table). Without the subscribe the sensors stay `unknown`; without the
+   publish the notifications still work and only the acks are refused.
 2. Copy `packages/ceres_robigus.yaml` to `/config/packages/` on vesta
    (packages are included by `homeassistant: packages: !include_dir_named packages`).
 3. Check configuration, reload MQTT entities + automations (or restart).
@@ -48,3 +51,23 @@ a hand dose Vertumnus asks for in the `advise` role. A phone push is a commented
 
 Adding a unit: copy the `pomona-0001` sensor and its automation, change the
 id (`<name>-NNNN`, ceres ADR-0009).
+
+## Tracing (1.3.0, ceres card #302)
+
+Home Assistant has no OpenTelemetry integration, so it does what the tower's
+firmware does for a dose: it **echoes**. Every Ceres document carries a W3C
+`traceparent` while a trace is live; the sensors keep it as an attribute, and
+after each notification (created or dismissed) the automation publishes a
+small non-retained ack — `ceres/<unit>/sys/alerts/ack`, `…/sys/advice/ack`,
+`ceres/sys/alerts/ack` — with `by`, `action`, `notification_id`, the
+conditions and the echoed `traceparent` — and, for a created notification, the
+rendered `title` and `message` (1.4.0), so the trace shows what HA actually said.
+Robigus opens a `robigus.notified`
+span under the tick that raised the condition and counts
+`robigus_notified_total{unit,what,by}`, so Jaeger (service `ceres-robigus`)
+shows "alert published, HA notified" as one trace. With tracing off in the
+Ceres zone the attribute is `null` and the acks simply carry no context.
+
+When a `rest_command` to a Ceres API is added (none yet; the APIs are
+in-cluster only), pass the same attribute as the `traceparent` HTTP header —
+the API's server span joins the trace. The pattern is in the package header.
