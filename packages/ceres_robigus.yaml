@@ -1,4 +1,7 @@
-# version: 1.3.0
+# version: 1.4.0
+#   1.4.0  2026-09-14  ceres card #302: the ack of a created notification carries the rendered
+#                      `title` and `message` too (rendered once via `variables`, used by both), so
+#                      Robigus's robigus.notified span shows what HA actually said.
 #   1.3.0  2026-09-14  ceres card #302: the trace across Home Assistant. Every sensor keeps the
 #                      document's `traceparent` as an attribute (Ceres puts it in while a trace is
 #                      live); after notifying, each automation publishes a small non-retained ack
@@ -107,14 +110,18 @@ automation:
              and trigger.to_state.state not in ['unknown', 'unavailable']
              and (trigger.to_state.state | int(0)) > (trigger.from_state.state | int(0)) }}
     action:
-      - service: persistent_notification.create
-        data:
-          notification_id: ceres_fleet_critical
+      # render once: the notification and the ack (ceres #302) carry the same text
+      - variables:
           title: "Ceres — critical: {{ state_attr('sensor.ceres_fleet_critical_alerts', 'units') | join(', ') }}"
           message: >-
             {% for a in state_attr('sensor.ceres_fleet_critical_alerts', 'alerts') %}
             - **{{ a.unit }}** {{ a.condition }} — {{ a.detail }} (since {{ a.since | timestamp_custom('%H:%M', true) }})
             {% endfor %}
+      - service: persistent_notification.create
+        data:
+          notification_id: ceres_fleet_critical
+          title: "{{ title }}"
+          message: "{{ message }}"
       # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
       # this under the tick that raised the condition. Non-retained: an ack is an event.
       - service: mqtt.publish
@@ -125,6 +132,7 @@ automation:
           payload: >-
             {{ {"ts": now().isoformat(), "by": "homeassistant",
                 "action": "persistent_notification.create", "notification_id": "ceres_fleet_critical",
+                "title": title, "message": message,
                 "units": trigger.to_state.attributes.get("units", []), "conditions": trigger.to_state.attributes.get("alerts", []) | map(attribute="condition") | list,
                 "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
       # - service: notify.mobile_app_<your_phone>
@@ -173,14 +181,18 @@ automation:
                 entity_id: sensor.ceres_pomona_0001_alerts
                 above: 0
             sequence:
-              - service: persistent_notification.create
-                data:
-                  notification_id: ceres_pomona_0001
+              # render once: the notification and the ack (ceres #302) carry the same text
+              - variables:
                   title: "Ceres — pomona-0001: {{ states('sensor.ceres_pomona_0001_alerts') }} condition(s)"
                   message: >-
                     {% for a in state_attr('sensor.ceres_pomona_0001_alerts', 'alerts') %}
                     - {{ a.condition }} ({{ a.severity }}) — {{ a.detail }}, since {{ a.since | timestamp_custom('%d %b %H:%M', true) }}
                     {% endfor %}
+              - service: persistent_notification.create
+                data:
+                  notification_id: ceres_pomona_0001
+                  title: "{{ title }}"
+                  message: "{{ message }}"
               # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
               # this under the tick that raised the condition. Non-retained: an ack is an event.
               - service: mqtt.publish
@@ -191,6 +203,7 @@ automation:
                   payload: >-
                     {{ {"unit": "pomona-0001", "ts": now().isoformat(), "by": "homeassistant",
                         "action": "persistent_notification.create", "notification_id": "ceres_pomona_0001",
+                        "title": title, "message": message,
                         "conditions": trigger.to_state.attributes.get("conditions", []),
                         "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
         default:
@@ -227,14 +240,18 @@ automation:
                 entity_id: sensor.ceres_pomona_0001_advice
                 above: 0
             sequence:
-              - service: persistent_notification.create
-                data:
-                  notification_id: ceres_pomona_0001_advice
+              # render once: the notification and the ack (ceres #302) carry the same text
+              - variables:
                   title: "Ceres — pomona-0001: {{ states('sensor.ceres_pomona_0001_advice') }} recommendation(s)"
                   message: >-
                     {% for a in state_attr('sensor.ceres_pomona_0001_advice', 'advice') %}
                     - {{ a.kind }}{% if a.crop %} ({{ a.crop }}){% endif %}: {{ a.text }}
                     {% endfor %}
+              - service: persistent_notification.create
+                data:
+                  notification_id: ceres_pomona_0001_advice
+                  title: "{{ title }}"
+                  message: "{{ message }}"
               # ceres #302: say what we did, echoing the document's traceparent — Robigus puts
               # this under the tick that raised the condition. Non-retained: an ack is an event.
               - service: mqtt.publish
@@ -245,6 +262,7 @@ automation:
                   payload: >-
                     {{ {"unit": "pomona-0001", "ts": now().isoformat(), "by": "homeassistant",
                         "action": "persistent_notification.create", "notification_id": "ceres_pomona_0001_advice",
+                        "title": title, "message": message,
                         "items": trigger.to_state.attributes.get("kinds", []),
                         "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
         default:

@@ -60,7 +60,9 @@ firmware does for a dose: it **echoes**. Every Ceres document carries a W3C
 after each notification (created or dismissed) the automation publishes a
 small non-retained ack — `ceres/<unit>/sys/alerts/ack`, `…/sys/advice/ack`,
 `ceres/sys/alerts/ack` — with `by`, `action`, `notification_id`, the
-conditions and the echoed `traceparent`. Robigus opens a `robigus.notified`
+conditions and the echoed `traceparent` — and, for a created notification, the
+rendered `title` and `message` (1.4.0), so the trace shows what HA actually said.
+Robigus opens a `robigus.notified`
 span under the tick that raised the condition and counts
 `robigus_notified_total{unit,what,by}`, so Jaeger (service `ceres-robigus`)
 shows "alert published, HA notified" as one trace. With tracing off in the
