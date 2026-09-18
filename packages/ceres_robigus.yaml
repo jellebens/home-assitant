@@ -1,4 +1,9 @@
-# version: 1.4.0
+# version: 1.5.0
+#   1.5.0  2026-09-18  ceres card #316 (ADR-0016): a new CRITICAL condition now also PUSHES to the
+#                      owner's phone (notify.mobile_app_grey_red_beard — the Samsung registered on
+#                      vesta), high priority so it rings at night. 2026-09-18 04:51 Ceres's own acid
+#                      took the tower to pH 3.4 and the alert sat as a persistent notification for
+#                      3.5 h. Robigus 0.9.0 makes ph_critical_low and acid_hold critical.
 #   1.4.0  2026-09-14  ceres card #302: the ack of a created notification carries the rendered
 #                      `title` and `message` too (rendered once via `variables`, used by both), so
 #                      Robigus's robigus.notified span shows what HA actually said.
@@ -135,10 +140,19 @@ automation:
                 "title": title, "message": message,
                 "units": trigger.to_state.attributes.get("units", []), "conditions": trigger.to_state.attributes.get("alerts", []) | map(attribute="condition") | list,
                 "traceparent": trigger.to_state.attributes.get("traceparent")} | tojson }}
-      # - service: notify.mobile_app_<your_phone>
-      #   data:
-      #     title: "Ceres — critical"
-      #     message: "{{ state_attr('sensor.ceres_fleet_critical_alerts', 'alerts') | map(attribute='condition') | join(', ') }}"
+      # ceres #316: the phone, too — a critical condition (pH far under the band, an acid hold, the
+      # pump or the node gone) kills plants in hours, and a persistent notification is not seen at night.
+      - service: notify.mobile_app_grey_red_beard
+        continue_on_error: true
+        data:
+          title: "{{ title }}"
+          message: >-
+            {% for a in state_attr('sensor.ceres_fleet_critical_alerts', 'alerts') %}{{ a.unit }} {{ a.condition }}: {{ a.detail }}
+            {% endfor %}
+          data:
+            ttl: 0
+            priority: high
+            tag: ceres_fleet_critical
 
   # Every critical condition cleared: dismiss the notification.
   - id: ceres_fleet_critical_cleared
