@@ -1,7 +1,14 @@
-# Bluetti telemetry self-heal — cards #212, #214, #246, #259
+# Bluetti telemetry self-heal — cards #212, #214, #246, #259, #306
 
 Make the Bluetti / buzzbrick **cloud** integration self-recover so a transient
 DNS/network blip can't silently freeze the battery telemetry for ~44h again.
+
+**Package 1.1.0 (#306, 2026-10-04)** is the current behaviour, and
+[§2d](#2d-package-110--what-the-2026-09-12-incident-showed-306) is the place to
+start: the detection matrix, the reload and notification timeline, the
+`sensor.bluetti_report_ages` sensor, deploy and post-deploy checks. Where an older
+section below disagrees with §2d (the 5-minute threshold, the cap of 4 reloads,
+the once-per-episode notification), §2d is right — those sections are marked.
 
 **#214 extends this** with a second freeze-mode detector for **fresh all-zeros**
 (incident 2026-07-26) that the original `last_reported`-freshness logic cannot
@@ -75,15 +82,24 @@ integration, which is the only thing that clears it.
 
 ## 2. What the package does
 
+As of package **1.1.0**:
+
 | Piece | Entity | Job |
 |---|---|---|
-| Detector (stale) | `binary_sensor.bluetti_telemetry_stale` | `on` when the battery telemetry stops polling (frozen) |
+| Detector (stale) | `binary_sensor.bluetti_telemetry_stale` | `on` when no battery entity has **reported** for longer than the threshold, or none is available |
 | Detector (all-zeros, #214) | `binary_sensor.bluetti_telemetry_all_zero` | `on` when SoC + grid-in + AC-out are all present and all ~0 |
-| Threshold | `input_number.bluetti_stale_threshold_minutes` (default **5 min**) | tune stale detection without editing templates |
-| Auto-recover | automation `bluetti_selfheal_reload_on_stale` | reloads the Bluetti config entry (fired by **either** detector) |
-| Loop guard | `input_datetime.bluetti_selfheal_last_reload` + `counter.bluetti_selfheal_reload_count` | 15-min cooldown, max 4 reloads/episode, then escalate — **shared** by both modes |
-| Owner escalation (#246) | automation `bluetti_selfheal_notify_stuck` | fires a "power-cycle the battery" persistent notification when the reload budget is spent (counter cap 4) **and** telemetry is still frozen |
-| Recovery reset | automation `bluetti_selfheal_reset_on_recovery` | clears the guard + notifications once **both** detectors are off |
+| Detector (SoC-zero, #306) | `binary_sensor.bluetti_telemetry_soc_zero` | `on` when SoC reads exactly 0 — notification only, see §2d |
+| Detector (partial freeze, #306) | `binary_sensor.bluetti_telemetry_partial_freeze` | `on` when one of SoC / grid-in / AC-out stopped reporting while another entity still reports — **observe-first**, see §2d |
+| Enforce switch (#306) | `input_boolean.bluetti_partial_freeze_enforce` (default **off**) | `on` = a partial freeze counts as stale |
+| Threshold | `input_number.bluetti_stale_threshold_minutes` (floor and default **10 min**) | tune stale detection without editing templates |
+| LAR liveness (#259) | `binary_sensor.bluetti_integration_alive` | `on` ⇔ not stale and not all-zero; its `heartbeat` attribute is load-bearing (§2c) |
+| True report ages (#306) | `sensor.bluetti_report_ages` | per-entity `last_reported` / `last_updated` age in seconds, readable over REST |
+| Episode (#306) | `binary_sensor.bluetti_selfheal_episode` + `input_datetime.bluetti_selfheal_episode_start` | `on` = not alive, or SoC-zero, for 2 min; `off` = good again for 12 min |
+| Auto-recover | automation `bluetti_selfheal_reload_on_stale` | reloads the Bluetti config entry while stale or all-zero — never stops |
+| Keep REST fresh (#259) | automation `bluetti_force_refresh_values` | reloads the entry when no value changed for 10 min |
+| Reload budget | `input_datetime.bluetti_selfheal_last_reload` (stamped by **both** reload automations) + `counter.bluetti_selfheal_reload_count` (informational) | at most one reload per 15 min from all automations together |
+| Owner escalation (#246, #306) | automation `bluetti_selfheal_notify_stuck` + `input_datetime.bluetti_selfheal_last_notify` | persistent notification **and phone push** 30 min into an episode, then every 2 h, with the duration |
+| Recovery reset | automation `bluetti_selfheal_reset_on_recovery` | when the episode ends: resets the counter, clears the notifications, sends "recovered" if the owner had been told |
 
 ### Freshness signal — why `last_reported`, not `last_updated`
 
@@ -101,11 +117,15 @@ entirely. We must detect that the integration **stopped polling**:
   if even the freshest hasn't reported in > threshold, the whole integration is
   wedged. Requiring the freshest to be stale means a single-entity quirk can't
   trip a false freeze — they must **all be stale together**.
-- Threshold **5 min** (default): the Bluetti cloud poll cadence is seconds, so
-  5 min of no fresh poll is dozens of missed polls. The reload automation also
-  requires the stale state to persist (`for: 2min`), so a blip that self-heals
-  within a poll or two never triggers a reload. First reload lands ~7 min after a
-  real freeze — vs the 44h manual-reload incident.
+- Threshold **10 min** (floor and default since 1.1.0). The original text here
+  said "5 min, the poll cadence is seconds". Neither held on vesta: the helper
+  has no `initial`, so it started at its `min` of **1 min**, and the archive of
+  this sensor's `freshest_signal_age_seconds` shows the freshest entity reports
+  once every **300 s** when nothing changes. A 1-minute threshold under a
+  5-minute cadence made the detector flap all day (§2d). The helper's `min` is
+  now 10 and the templates floor it at 10 as well. The reload automation also
+  requires the stale state to persist (`for: 2min`), so the first reload lands
+  ~12 min after a real freeze — vs the 44h manual-reload incident.
 
 If your HA build predates `last_reported` (added 2024.8), fall back to
 `last_updated` and raise the threshold well above the longest expected idle
@@ -141,6 +161,10 @@ integration is "fresh" by every timing measure; it is only the *values* that are
 wrong. Detecting it therefore requires inspecting the values, which is exactly
 what this sensor does.
 
+> **1.1.0:** the wiring below still holds for the triggers and the `or`
+> condition. The retry cap of 4 and the "both detectors off" reset it mentions
+> are gone — see "Loop guard" further down and §2d.
+
 **Wiring (same guard, not a second one):** the all-zeros sensor is added as an
 **additional trigger** on `bluetti_selfheal_reload_on_stale`, with the same
 `for: "00:02:00"` debounce as the stale trigger. The reload condition became an
@@ -168,20 +192,37 @@ HA resolves that entity → its owning config entry → reloads it. **This needs
 host-side `config_entry_id`**, which is why the package is portable and can ship
 from this repo unfilled. (Fallback by explicit id in §5.)
 
-### Loop guard (so a real outage doesn't hammer reloads)
+### Loop guard (so a real outage doesn't hammer reloads) — 1.1.0
 
-- **Cooldown:** no reload within **15 min** of the last attempt (epoch-timestamp
-  compare, tz-safe).
-- **Retry cap:** at most **4** reloads per freeze episode. Attempts land at
-  roughly +7, +22, +37, +52 min; after the 4th, reloads pause and the owner
-  escalation (§2b) fires the "power-cycle the battery" notification.
-- **Reset:** when telemetry is fresh again for 2 min, the counter resets and the
-  notifications clear, so the next episode starts from zero.
+- **One budget for every reload.** Both reload automations stamp
+  `input_datetime.bluetti_selfheal_last_reload`, and the episode automation
+  honours the stamp whoever wrote it: **at most one reload of the Bluetti config
+  entry per 15 minutes, from all automations together.** (Until 1.1.0 the two
+  fired independently, often in the same second.)
+- **Fast phase:** in the first hour of an episode the cooldown is **15 min** —
+  about 4 attempts.
+- **Slow phase:** after the first hour the cooldown is **60 min**, and it
+  **never stops** while the freeze lasts. The old cap of 4 went quiet for good:
+  on 2026-09-13 it was reached at 00:25 UTC and the automation did nothing for
+  the remaining 20 h.
+- **Reset:** when the episode ends (`binary_sensor.bluetti_selfheal_episode`
+  goes off: good again for 12 min) the counter resets and the notifications
+  clear. 12 min, not 2: a reload re-creates the entities, so the stale detector
+  is off for one threshold after every reload whether it helped or not;
+  "recovered" has to outlast that.
 
-A transient blip self-heals on attempt 1; a genuine multi-hour Bluetti-cloud
-outage escalates once and then stays quiet.
+A transient blip self-heals on attempt 1; an outage that reloads cannot fix is
+reloaded at a bounded rate for as long as it lasts, and the owner is told (§2b).
 
-## 2b. Owner escalation — when auto-heal gives up (#246)
+## 2b. Owner escalation (#246, reworked in 1.1.0 by #306)
+
+> **1.1.0:** the trigger and the repeat described in the bullets below are the
+> 1.0.0 design and no longer apply. The automation now goes by the **duration of
+> the episode**: a persistent notification **and a phone push**
+> (`notify.mobile_app_grey_red_beard`, normal priority) 30–35 min into an
+> episode, again every 2 h for as long as it lasts, each with the duration in
+> the title ("Bluetti telemetry DOWN for 2.5 h"), and a "recovered after …" push
+> at the end. Why: §2d.
 
 The self-heal only ever reloads the **HA integration**. That clears a wedged
 poller, but it can do nothing about a **battery-side hang** (the 2026-08-19
@@ -232,11 +273,13 @@ card left on vesta from before the re-apply gets cleared.
 
 ### Notifications
 
-Persistent notifications fire on each reload (`bluetti_selfheal`) and on the
-owner escalation (`bluetti_telemetry_stuck`, §2b) — both always-available, no
-host config. An optional `notify.mobile_app_<device>` push is included
-**commented out** on both — uncomment and set your device's notify service on
-vesta.
+Persistent notifications fire on each reload by the episode automation
+(`bluetti_selfheal`) and on the owner escalation (`bluetti_telemetry_stuck`,
+§2b) — both always-available, no host config. Since 1.1.0 the escalation and the
+recovery also push to the phone through `notify.mobile_app_grey_red_beard` (the
+device `ceres_robigus` 1.5.0 already uses), with `continue_on_error` so a
+missing service cannot break the automation. The per-reload notification stays
+persistent-only.
 
 ## 2c. LAR liveness signal + force-refresh (#259, 2026-08-31)
 
@@ -277,7 +320,209 @@ force-refresh keeps REST fresh → liveness override clears a false stale →
 `battery_stale_max_hold_seconds` (interim blind timer, revert to 0 once the
 above two are proven) → #211 hold as the final safety.
 
+**1.1.0 (#306):** both pieces are kept. The force-refresh condition is unchanged;
+it now stamps `input_datetime.bluetti_selfheal_last_reload` after its reload so
+the episode automation does not reload on top of it. The alive sensor's template
+is unchanged, but it inherits the corrected stale threshold: until 1.1.0 it was
+`off` about two thirds of the time on a working integration (§2d).
+
+## 2d. Package 1.1.0 — what the 2026-09-12 incident showed (#306)
+
+Everything in this section is read from the InfluxDB archive of Home Assistant
+(bucket `homeassistant`, through Grafana, read-only) — the package's own
+sensors, counter and automations are in it. Times are **UTC**.
+
+### The incident, as Home Assistant recorded it
+
+| Time (UTC) | What the integration served | What the package did |
+|---|---|---|
+| 09-12 from ≤ 18:00 | values change **only at a reload** (two writes per entity per reload) | reloads ~8 an hour: force-refresh every 15 min, the episode automation on a flapping stale detector |
+| 09-12 ~22:50 | **SoC 0**, grid-in 654 W, AC-out 653 W, the same at every reload | nothing: not all-zero (two of three non-zero), not stale. No detector saw it for 4 h 20 min |
+| 09-13 00:25:01 | same | the reload counter reaches its cap of 4 (it had stopped being reset); the episode automation stops reloading |
+| 09-13 00:30:01 | same | `bluetti_selfheal_notify_stuck` fires — **once**, a persistent notification. It was the flapping *stale* detector that satisfied its condition; the all-zero detector was off |
+| 09-13 ~03:10 | **SoC 0, grid-in 0, AC-out 0** | `bluetti_telemetry_all_zero` on (off for ~1.5 s at each reload); `bluetti_integration_alive` off |
+| 09-13 03:10 → 21:00 | all zeros | force-refresh reloads every 15 min (86 in the whole incident); each one re-creates the entities with a cached 51 % / 2008 W / 607 W for ~130 ms and then gets zeros again. Nothing else: no reload from the episode automation, no second notification |
+| 09-13 21:01 | — | the archive goes dark until 09-15 ~12:30 (no HA entity wrote anything, including the minutely alive heartbeat); the end of the incident is not in it |
+
+So: the notification fired, once, 1 h 40 min in, where nobody looked, and never
+again. 86 reloads did not help, because a reload was not the cure — every fresh
+fetch returned the same zeros. (Card #306 assumed the zeros were re-stamped
+every ~30 s and so never tripped the force-refresh. The record says otherwise:
+the zeros were constant values and the force-refresh fired every 15 min
+throughout.)
+
+### What was wrong in 1.0.0 (four separate things)
+
+1. **The stale threshold was 1 minute, the report cadence is 300 s.**
+   `input_number.bluetti_stale_threshold_minutes` has no `initial`, so it started
+   at its `min` (1), not at the documented 5. `freshest_signal_age_seconds`
+   climbs 1 → 61 → 121 → 181 → 241 and resets, around the clock. Result on
+   2026-10-03: stale `on` 62–71 % of the time, `bluetti_integration_alive` `on`
+   only 29–38 % of the time, and the episode automation reloading on a false
+   freeze ~90 times a day. The #246 notification fired 13 more times between
+   09-18 and 10-04 for the same reason.
+2. **SoC 0 with power flowing was invisible** (the first 4 h 20 min).
+3. **The escalation fired once and its backstop could not fire**: it needed a
+   detector continuously `on` for 30 min, and every reload takes the entities
+   away for a second.
+4. **The cap of 4 never reset**: the reset needed the stale detector `off` for
+   2 min, which a flapping detector rarely gives.
+
+### Detection matrix (1.1.0)
+
+| Mode | Looks like | Signal that catches it | Reload | Owner told |
+|---|---|---|---|---|
+| Stale (#212) | values present, no entity reports | `bluetti_telemetry_stale` (MIN `last_reported` age > 10 min) | yes | yes, if it lasts through the reloads |
+| Hard down | every entity unavailable | `bluetti_telemetry_stale` (no ages at all) | yes | yes |
+| All-zero (#214) | SoC, grid-in, AC-out all 0 | `bluetti_telemetry_all_zero` | yes | yes |
+| SoC-zero (#306) | SoC 0, power non-zero | `bluetti_telemetry_soc_zero` | no (did not help on 09-12; the force-refresh still runs) | yes |
+| Partial freeze (#306) | one of SoC / grid-in / AC-out silent, another entity reporting | `bluetti_telemetry_partial_freeze` (MAX `last_reported` age over those three > 10 min) | only with `bluetti_partial_freeze_enforce` on | only with enforce on |
+| Reports, but values only change at a reload | `last_reported` advances every 300 s, `last_updated` only at reloads | **nothing** — read `min_updated_s` on `sensor.bluetti_report_ages` | force-refresh every 15 min (which is the only thing delivering data) | no |
+
+The last row is not hypothetical: it is the state of the integration **since
+about 2026-09-18** and on 2026-10-04. On 2026-10-03 between 13:00 and 13:40,
+during a charge, SoC went 67 → 70 → 72 and each of those values arrived at a
+reload (13:00, 13:05, 13:20, 13:35) — nothing in between. A healthy day
+(2026-09-17) has ~1900 AC-out writes; these days have ~300. The lar is being fed
+one sample per reload. This package cannot tell that state from a battery that
+is idle, and reloading does not cure it; it is a separate problem (owner /
+upstream integration), listed in the PR as the first follow-up.
+
+### Partial freeze — why it only observes
+
+The stale detector takes the MIN age, so one live entity masks three frozen
+ones. Flipping MIN to MAX `last_updated` would be wrong: "value unchanged" is
+true of PV all night and of grid-in for a whole steady charge, and it would
+reload around the clock. The right signal is the MAX **`last_reported`** age
+over the entities that are *expected to keep reporting*.
+
+Which entities those are is the open point. PV is out (it reads 0 in every
+sample of the archive; if the integration only writes on change it never writes
+at all). AC-out is in (it changes ~every 45 s on a healthy day). SoC and grid-in
+are in because they are what the lar steers on — but whether the integration
+re-reports an unchanged SoC or grid-in cannot be read from the archive: InfluxDB
+only receives value changes, and the one archived `last_reported` number is the
+MIN over all four. So the detector computes its verdict and does nothing with it
+until `input_boolean.bluetti_partial_freeze_enforce` is turned on.
+
+**To decide (owner, after a day and a night on 1.1.0):** look at
+`sensor.bluetti_report_ages` history. If `soc_s`, `grid_input_s` and `ac_out_s`
+all stay under 600 while things are fine, turn the switch on. If one of them
+climbs past 600 with nothing wrong (the partial-freeze sensor will be `on`),
+that entity is not "expected to report": take it out of the `expected` list in
+the package instead.
+
+### `sensor.bluetti_report_ages` — how to read it
+
+REST shows a cache-frozen `last_reported` and only moves `last_updated` when a
+value changes, so from outside HA "constant" and "frozen" are the same. This
+sensor publishes what the template engine sees, once a minute:
+
+| Attribute | Meaning |
+|---|---|
+| `soc_s`, `grid_input_s`, `ac_out_s`, `pv_input_s` | seconds since that entity last **reported** (wrote its state, changed or not); `null` = unavailable |
+| `min_s`, `max_s` | freshest / oldest report over the available entities; the state of the sensor is `max_s` |
+| `expected_max_s` | oldest report over SoC, grid-in, AC-out — what the partial-freeze detector compares to the threshold |
+| `soc_updated_s`, `grid_input_updated_s`, `ac_out_updated_s`, `pv_input_updated_s` | seconds since that entity's **value last changed** (what REST shows) |
+| `min_updated_s` | freshest value change — what the force-refresh compares to 600 s |
+| `available` | how many of the four entities are available (0 = hard down) |
+| `as_of` | the minute the ages were computed |
+
+- **Is this sensor itself fresh?** `as_of` changes every minute, so its REST
+  `last_updated` moves while HA's template engine works. A reader (the lar, in a
+  follow-up) checks that it is under ~2 min old and then trusts the ages.
+- **Healthy:** `min_s` under 300, `min_updated_s` under a minute or two.
+- **Reports but no data** (the last row of the matrix): `min_s` under 300 while
+  `min_updated_s` saw-tooths up to ~900 and drops only at a reload.
+- **Frozen:** `min_s` over 600.
+- **One entity frozen:** its `*_s` over 600 while `min_s` is small.
+- **Cost:** it is trigger-based — exactly one state write a minute (1440 a day),
+  never one per Bluetti state change — and has no `state_class`, so no
+  long-term statistics. It does land in the recorder and in InfluxDB like the
+  stale and alive sensors already do every minute. To keep it out of the
+  recorder, add it to `recorder: exclude: entities:` in vesta's
+  `configuration.yaml` (a package cannot carry a second `recorder:` block); keep
+  it in InfluxDB, that history is the point.
+
+### Reload and notification timeline (1.1.0)
+
+For an episode that starts at T (the first minute a detector is on):
+
+| When | What |
+|---|---|
+| T + 2 min | episode `on`; first reload, unless something reloaded in the last 15 min |
+| first hour | a reload whenever 15 min have passed since the last one (any automation) |
+| T + 32…37 min | first notification: persistent + phone, "DOWN for 3x min" |
+| after 1 h | the episode automation retries hourly; the force-refresh keeps its own 15-min rhythm while values are constant |
+| every 2 h | the notification repeats with the new duration (the phone push replaces the previous one) |
+| recovery + 12 min | episode `off`: counter reset, notifications dismissed, "recovered after …" push |
+
+### Reload rate
+
+| State of the integration | 1.0.0, measured | 1.1.0 |
+|---|---|---|
+| healthy, values changing (2026-09-17) | 4 a day (false stale) | ~0 |
+| values constant: idle, or the "only at a reload" state (2026-10-02/03) | **~178 a day** (88 force-refresh + ~90 false stale) | **≤ 96 a day** (force-refresh only, one per 15 min) |
+| outage (stale / all-zero) | 8 in the first hour, then 4 an hour | 4 an hour |
+
+In the "only at a reload" state the reloads are also the lar's samples. Their
+longest gap stays 15 min; the extra sample ~5 min after each force-refresh
+reload, which the false-stale reload happened to give, goes away.
+
 ## 3. Apply on vesta (owner step — live-prod, not done by the agent)
+
+### Deploying 1.1.0 (#306)
+
+One file: `packages/bluetti_selfheal.yaml`. Nothing else on vesta changes.
+
+1. From a checkout of `main` with the PR merged:
+   `scripts/deploy.sh --check bluetti_selfheal` (expect git `1.1.0`, vesta
+   `1.0.0`), then `scripts/deploy.sh bluetti_selfheal`. With `HA_TOKEN` exported
+   it runs the config check and `homeassistant.reload_all`; without it, it only
+   copies the file — then Developer Tools → YAML → **Check configuration**, and
+   **All YAML configuration** reload (or restart Home Assistant).
+2. A reload is enough: every domain the package touches reloads (template,
+   automation, input_number, input_boolean, input_datetime, counter). If one of
+   the new entities is missing afterwards, restart Home Assistant.
+3. Check, in Developer Tools → States:
+   - `input_number.bluetti_stale_threshold_minutes` = **10** (it was 1).
+   - `binary_sensor.bluetti_telemetry_stale` = `off` and **stays** off over
+     10 minutes (it used to flip every few minutes); `threshold_seconds` = 600.
+   - `binary_sensor.bluetti_integration_alive` = `on`, `heartbeat` moving every
+     minute.
+   - `sensor.bluetti_report_ages`: a number, `as_of` moving every minute, the
+     four `*_s` and four `*_updated_s` attributes filled.
+   - `binary_sensor.bluetti_telemetry_soc_zero` = `off`,
+     `binary_sensor.bluetti_telemetry_partial_freeze` = on or off (it only
+     observes), `input_boolean.bluetti_partial_freeze_enforce` = `off`.
+   - `binary_sensor.bluetti_selfheal_episode` = `unknown` for the first 12 min,
+     then `off`; when it settles, `counter.bluetti_selfheal_reload_count` goes
+     to 0 and any old "STUCK" notification disappears.
+4. Check the phone path once: Developer Tools → Actions →
+   `notify.mobile_app_grey_red_beard` with a test message. If that service does
+   not exist the automation still runs (`continue_on_error`), but nothing reaches
+   the phone.
+5. Paste in Developer Tools → Template to see the true ages next to the
+   detectors:
+   ```jinja
+   {% set r = 'sensor.bluetti_report_ages' %}
+   reported  soc={{ state_attr(r,'soc_s') }} grid={{ state_attr(r,'grid_input_s') }} ac={{ state_attr(r,'ac_out_s') }} pv={{ state_attr(r,'pv_input_s') }}
+   updated   soc={{ state_attr(r,'soc_updated_s') }} grid={{ state_attr(r,'grid_input_updated_s') }} ac={{ state_attr(r,'ac_out_updated_s') }} pv={{ state_attr(r,'pv_input_updated_s') }}
+   stale={{ states('binary_sensor.bluetti_telemetry_stale') }} partial={{ states('binary_sensor.bluetti_telemetry_partial_freeze') }} zero={{ states('binary_sensor.bluetti_telemetry_all_zero') }} soc0={{ states('binary_sensor.bluetti_telemetry_soc_zero') }} alive={{ states('binary_sensor.bluetti_integration_alive') }} episode={{ states('binary_sensor.bluetti_selfheal_episode') }}
+   last reload {{ ((now().timestamp() - state_attr('input_datetime.bluetti_selfheal_last_reload','timestamp')) / 60) | round(0) }} min ago
+   ```
+6. Over the next day: Settings → Automations → *Bluetti self-heal: reload
+   integration when telemetry frozen* should show **no** runs while things work
+   (it ran ~90 times a day), and *Bluetti force-refresh* at most one run per
+   15 min.
+7. After a day and a night: decide on the partial-freeze switch (§2d).
+
+To go back: `git revert` the 1.1.0 commit on `main` and run
+`scripts/deploy.sh bluetti_selfheal` again (the script deploys committed files
+only). The three new helpers and four new sensors disappear; the threshold
+helper keeps the value 10.
+
+### First install (#212, historical)
 
 1. Copy [`packages/bluetti_selfheal.yaml`](packages/bluetti_selfheal.yaml) to
    `vesta:/config/packages/bluetti_selfheal.yaml` (Samba share or the File-editor
@@ -295,7 +540,8 @@ above two are proven) → #211 hold as the final safety.
    Template + Automations + the helper domains).
 5. Sanity-check in Developer Tools → States:
    - `binary_sensor.bluetti_telemetry_stale` = `off`, and its
-     `freshest_signal_age_seconds` attribute is small (a few seconds).
+     `freshest_signal_age_seconds` attribute is under ~300 (the integration
+     reports at least every 300 s).
    - `binary_sensor.bluetti_telemetry_all_zero` = `off` (unless the battery is
      genuinely at 0 with no grid-in and no AC-out — check its `soc_percent`,
      `grid_input_power_w`, `ac_output_power_w` attributes show the real values).
@@ -313,11 +559,13 @@ above two are proven) → #211 hold as the final safety.
 
 ## 4. Verify auto-recovery once (optional, owner)
 
-To prove the loop end-to-end without waiting for a real blip, temporarily raise
-`input_number.bluetti_stale_threshold_minutes` and pull the integration's
-connectivity (or stop it briefly), watch `binary_sensor.bluetti_telemetry_stale`
-go `on`, and confirm the automation reloads and the counter increments. Restore
-the threshold to 5 afterward.
+To prove the loop end-to-end without waiting for a real blip, pull the
+integration's connectivity (or disable the config entry briefly), watch
+`binary_sensor.bluetti_telemetry_stale` go `on` and
+`binary_sensor.bluetti_selfheal_episode` follow 2 min later, and confirm the
+automation reloads and the counter increments. Leave it down for 35 min to see
+the notification and the phone push; restore it and the "recovered" push comes
+12 min after the telemetry is back.
 
 ## 5. Fallback: target by explicit `config_entry_id` (host-side value)
 
@@ -367,6 +615,11 @@ detector stands alone; the webhook is purely additive.
 
 - **Not git-deployable:** this repo does not sync to vesta; the live apply (§3)
   is an owner-gated step, described here, not performed by the agent.
+- **Open owner decisions from #306** (§2d): the partial-freeze switch (after a
+  day of `sensor.bluetti_report_ages`); whether the phone push should be
+  high-priority (it is normal priority: lost optimisation, not a safety
+  problem); and the integration's "values only change at a reload" state, which
+  this package can neither detect nor cure.
 - **Entity IDs** must be confirmed on the live host (§3.3).
 - **`config_entry_id`** could not be determined from the repo — it is host-side.
   The package avoids needing it by targeting the entry via `entity_id`; the

@@ -32,8 +32,11 @@ side. The header is how you tell which behavior is actually live:
   - [templates/jupiter_savings_sensor.yaml](templates/jupiter_savings_sensor.yaml) — drop-in package
 - Bluetti telemetry self-heal (auto-reloads the Bluetti cloud integration when
   its battery telemetry freezes stale-but-present, so a transient blip can't
-  wedge it for hours — #212):
-  - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook
+  wedge it for hours — #212; all-zero #214; `bluetti_integration_alive` for the
+  lar #259; package 1.1.0, #306: never-give-up reloads at one per 15 min, owner
+  notified on the phone after 30 min and every 2 h, `sensor.bluetti_report_ages`
+  = the true per-entity report ages over REST):
+  - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook (start at §2d)
   - [packages/bluetti_selfheal.yaml](packages/bluetti_selfheal.yaml) — drop-in package
 - Ceres — Robigus plant-health alerts + advice as HA sensors + notifications (one
   source of every hydroponic unit's conditions; ceres cards #293/#294), and the
