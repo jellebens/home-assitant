@@ -1,5 +1,14 @@
-# Bluetti / buzzbrick telemetry self-heal (cards #212, #214, #246, #259, #306)
-# version: 1.1.0
+# Bluetti / buzzbrick telemetry self-heal (cards #212, #214, #246, #259, #306, #319)
+# version: 1.2.0
+#   1.2.0 (2026-10-04) card #319 (values only arrive at a reload since 2026-09-18: the
+#                      integration's websocket handler drops every cloud push — runbook
+#                      §2e). ADDITIVE, nothing existing changes behaviour. New:
+#                      sensor.bluetti_last_push_update (when a value last changed
+#                      WITHOUT a reload), `push_s` on sensor.bluetti_report_ages,
+#                      binary_sensor.bluetti_push_dead (no such change for 30 min —
+#                      input_number.bluetti_push_dead_threshold_minutes) and one
+#                      notification when it turns on. It reloads nothing and is not
+#                      part of `bluetti_integration_alive`.
 #   1.1.0 (2026-10-04) card #306 (SoC-zero / all-zero freeze 2026-09-12 → 09-13). Stale
 #                      threshold floored at 10 min (the helper sat at 1 min on vesta
 #                      against a 300 s report cadence: the detector was ON ~2/3 of
@@ -48,12 +57,20 @@
 #  hard down                 every entity unavailable            bluetti_telemetry_stale
 #                                                                (no ages at all = stale)
 #
-#  NOT caught by anything here (measured 2026-10-04, see the runbook §2d): the
-#  integration keeps REPORTING every 300 s but the values only ever change at an
-#  integration reload. `last_reported` advances, so it is "alive" by every timing
-#  measure; the only relief is the force-refresh reload below. Read
-#  sensor.bluetti_report_ages `min_updated_s`: a healthy integration keeps it under
-#  a minute or two, this mode saw-tooths it to ~900 s even mid-charge.
+#  push dead (#319)          values only change at a reload; the   bluetti_push_dead
+#                            entities may still "report"          (notify only — see there)
+#
+#  PUSH DEAD (#319, runbook §2e). In cloud mode the integration has exactly one
+#  source of live values: a websocket push from the Bluetti cloud, on which it
+#  re-reads the device over REST. Nothing polls. When the push handler fails (the
+#  KeyError of upstream #171/#172/#176) the values freeze until the entry is
+#  reloaded — the load does one REST read — while `last_reported` can KEEP
+#  ADVANCING: every write to a Bluetti select/switch makes the integration
+#  re-write all its entities with the values it already had. So the "reports
+#  every 300 s" that 1.1.0 measured were the working-mode automation's writes, not
+#  telemetry, and the stale detector cannot see this mode. What does see it: a
+#  value that changed with no reload around it. The only relief until the
+#  integration is fixed is the force-refresh reload below (one sample per 15 min).
 #
 # ---------------------------------------------------------------------------
 # FRESHNESS SIGNAL — `last_reported`, and what the HA archive says about it
@@ -70,7 +87,9 @@
 #  * THRESHOLD (#306): `input_number.bluetti_stale_threshold_minutes`, floor
 #    10 min. Measured in the InfluxDB archive of this sensor's own
 #    `freshest_signal_age_seconds`: when nothing changes, the freshest entity
-#    reports once every 300 s (age climbs 1 → 61 → 121 → 181 → 241, resets). The
+#    reports once every 300 s (age climbs 1 → 61 → 121 → 181 → 241, resets; #319:
+#    those reports are the side effect of a 5-minute working-mode write, and they
+#    stop when that automation has nothing to write — see PUSH DEAD above). The
 #    documented default was 5 min, but an input_number without `initial` starts at
 #    its `min`, which was 1 — so the live threshold was 1 min, under the cadence,
 #    and the detector flapped all day (stale 62–71 % of 2026-10-03). The helper's
@@ -94,6 +113,17 @@ input_number:
     step: 1
     unit_of_measurement: min
     icon: mdi:timer-alert
+  # #319: how long without a single value change that did not come from a reload
+  # before binary_sensor.bluetti_push_dead turns on. min IS the default (see
+  # above). 30 min against a healthy integration whose longest silence in the
+  # archive is under 11 min (2026-09-03 → 09-18, two cloud outages aside).
+  bluetti_push_dead_threshold_minutes:
+    name: Bluetti push-dead threshold
+    min: 30
+    max: 240
+    step: 5
+    unit_of_measurement: min
+    icon: mdi:cloud-alert
 
 input_boolean:
   # OFF (default) = the partial-freeze detector only observes. ON = a partial
@@ -270,6 +300,14 @@ template:
               {% endif %}
             {% endfor %}
             {{ (ns.ages | min) | round(0) | int if ns.ages | length > 0 else none }}
+          # #319: seconds since a value last changed WITHOUT a reload around it
+          # (sensor.bluetti_last_push_update). Healthy: under ~6 min (that sensor
+          # moves at most once per 5 min). Push dead: climbs for hours, straight
+          # through the reloads that reset every `*_updated_s` above. `null` until
+          # that sensor has a state.
+          push_s: >
+            {% set ts = as_timestamp(states('sensor.bluetti_last_push_update'), 0) | float(0) %}
+            {{ ((now().timestamp() - ts) | round(0) | int) if ts > 0 else none }}
           # How many of the four entities are available (0 = hard down).
           available: >
             {% set signals = [
@@ -289,6 +327,71 @@ template:
           # entity's REST last_updated advances while the template engine lives.
           as_of: >
             {{ now().replace(second=0, microsecond=0).isoformat() }}
+
+  # --- Last push update (#319) ------------------------------------------------
+  # When did a Bluetti value last change WITHOUT a reload around it — i.e. when
+  # did the cloud push last deliver something. This is the one thing a reload
+  # cannot fake: at a reload each entity goes value → unavailable → a placeholder
+  # from the config entry (51 % / 2008 W / 607 W on vesta) → the real value when
+  # the first fetch answers — usually 70–110 ms later, but 5 s to minutes in 3 %
+  # of the reloads (106 s on 2026-10-04 15:10 UTC). So `last_updated` is fresh
+  # after every reload whether the push works or not.
+  #
+  # A change counts as a push when:
+  #   * both the old and the new state are real values (not unknown/unavailable)
+  #     and they differ; and
+  #   * the OLD value was itself set more than 30 s after the entities last came
+  #     back from unavailable (`last_reload_seen`). The placeholder is set in the
+  #     instant they come back, so placeholder → first real value never counts,
+  #     however slow the first fetch is; neither does the first change after it.
+  #     From the second push after a reload on, every change counts.
+  # `last_reload_seen` is kept by this sensor itself (any of the four going
+  # unknown/unavailable → value), so it covers every kind of reload: this
+  # package's, a manual one, the integration's own token-refresh reload, an HA
+  # restart.
+  #
+  # State = the time of the last push, moved at most once per 5 minutes (≤ 288
+  # recorder rows a day, plus one or two per reload for the attribute; a render
+  # that changes nothing writes nothing). Before the first push it holds the time
+  # of its own first trigger, so the detector below starts counting from the
+  # deploy. Restored over an HA restart.
+  - trigger:
+      - platform: state
+        entity_id:
+          - sensor.office_buzzbrick_battery_level
+          - sensor.office_buzzbrick_ap3002532000565690_grid_input_power
+          - sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power
+          - sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power
+    sensor:
+      - name: Bluetti Last Push Update
+        unique_id: bluetti_last_push_update
+        device_class: timestamp
+        icon: mdi:cloud-sync-outline
+        state: >
+          {% set bad = ['unknown', 'unavailable'] %}
+          {% set f = trigger.from_state %}
+          {% set t = trigger.to_state %}
+          {% set have = this is defined and this is not none %}
+          {% set prev = (as_timestamp(this.state, 0) | float(0)) if have else 0 %}
+          {% set seen = (this.attributes.get('last_reload_seen', 0) | float(0)) if have else 0 %}
+          {% set push = f is not none and t is not none
+               and f.state not in bad and t.state not in bad and f.state != t.state
+               and (as_timestamp(f.last_changed, 0) | float(0)) > seen + 30 %}
+          {% if prev <= 0 or (push and (now().timestamp() - prev) >= 300) %}
+            {{ now().replace(microsecond=0).isoformat() }}
+          {% else %}
+            {{ this.state }}
+          {% endif %}
+        attributes:
+          # Epoch seconds of the last time one of the four came back from
+          # unknown/unavailable — i.e. the last (re)load of the integration.
+          last_reload_seen: >
+            {% set bad = ['unknown', 'unavailable'] %}
+            {% set f = trigger.from_state %}
+            {% set t = trigger.to_state %}
+            {% set have = this is defined and this is not none %}
+            {% set seen = (this.attributes.get('last_reload_seen', 0) | int(0)) if have else 0 %}
+            {{ (now().timestamp() | int) if (t is not none and t.state not in bad and (f is none or f.state in bad)) else seen }}
 
   # --- Freeze detectors -----------------------------------------------------
   - binary_sensor:
@@ -488,6 +591,40 @@ template:
           {% else %}
             {{ ((states(soc) | float(1)) | abs) < 0.001 }}
           {% endif %}
+
+      # Push-dead detector (#319) — NOTIFY ONLY. -------------------------------
+      # on = no Bluetti value has changed without a reload for longer than
+      #      input_number.bluetti_push_dead_threshold_minutes (floor 30 min): the
+      #      values the lar and the kiosk see are one sample per force-refresh
+      #      reload. This is the state of the integration since 2026-09-18 09:16
+      #      UTC (runbook §2e).
+      # off = a push arrived within the threshold, or sensor.bluetti_last_push_update
+      #       has no state yet.
+      #
+      # Deliberately NOT part of `bluetti_integration_alive` and it triggers no
+      # reload: the alive contract with the lar is unchanged, the force-refresh
+      # already reloads every 15 min in this state, and more reloads are not a
+      # cure — each one stalls Home Assistant's event loop for 5 s (§2e). It only
+      # tells the owner, once, and is the acceptance test of the integration fix:
+      # it must go off and stay off.
+      #
+      # Why 30 min is safe: on a healthy integration AC-out alone changes ~84
+      # times an hour around the clock, and the longest silence of all four
+      # entities together in the archive (2026-09-03 → 09-18, the two cloud outages
+      # of 09-08 and 09-10 aside) is 638 s.
+      - name: Bluetti Push Dead
+        unique_id: bluetti_push_dead
+        device_class: problem
+        icon: mdi:cloud-off-outline
+        state: >
+          {% set threshold = ([states('input_number.bluetti_push_dead_threshold_minutes') | float(30), 30] | max) * 60 %}
+          {% set ts = as_timestamp(states('sensor.bluetti_last_push_update'), 0) | float(0) %}
+          {{ ts > 0 and (now().timestamp() - ts) > threshold }}
+        attributes:
+          # Static (the age itself is `push_s` on sensor.bluetti_report_ages), so
+          # this sensor only writes on a verdict.
+          threshold_seconds: >
+            {{ ([states('input_number.bluetti_push_dead_threshold_minutes') | float(30), 30] | max) * 60 }}
 
       # LAR-liveness signal (#259) — HA-side half of the jupiter lar permanent
       # fix (lar PR #125). ------------------------------------------------------
@@ -957,3 +1094,63 @@ automation:
           entity_id: input_datetime.bluetti_selfheal_episode_start
         data:
           timestamp: 0
+
+  # 3) Push dead (#319): tell the owner ONCE when the values stop arriving
+  #    between reloads. `from: "off"` on purpose: after an HA restart or a
+  #    template reload the sensor comes back as unknown → on, and that must not
+  #    notify again. Not while a DOWN episode is running — that has its own,
+  #    louder notification. No repeat: the card stays until it clears, and this
+  #    state can last for weeks while a fix is pending upstream (it ran unnoticed
+  #    from 2026-09-18 to 10-03).
+  - id: bluetti_push_dead_notify
+    alias: "Bluetti push dead: tell the owner the values only arrive at a reload"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.bluetti_push_dead
+        from: "off"
+        to: "on"
+    condition:
+      - condition: template
+        value_template: >
+          {{ not is_state('binary_sensor.bluetti_selfheal_episode', 'on') }}
+    action:
+      - service: persistent_notification.create
+        data:
+          notification_id: bluetti_push_dead
+          title: "Bluetti live updates stopped"
+          message: >
+            No Bluetti value has changed without an integration reload for
+            {{ ((state_attr('sensor.bluetti_report_ages', 'push_s') | float(0)) / 60) | round(0) | int }} min
+            (since {{ as_timestamp(states('sensor.bluetti_last_push_update'), 0) | timestamp_custom('%Y-%m-%d %H:%M', true) }}).
+            The battery values now refresh only at the 15-minute force-refresh
+            reload: jupiter-lar plans on samples up to 15 min old and its spike
+            path has no fresh grid-input. Look in Settings → System → Logs for
+            "error from callback … web_socket_message_handler" (upstream
+            bluetti-home-assistant #171 / #172 / #176). If the integration was
+            just updated, the local models.py patch is gone: runbook
+            bluetti-selfheal.md §2e. This card clears by itself when live
+            updates return.
+      - service: notify.mobile_app_grey_red_beard
+        continue_on_error: true
+        data:
+          title: "Bluetti live updates stopped"
+          message: >
+            Battery values only refresh at the 15-min reload. Check the HA log for
+            the BLUETTI websocket error — runbook bluetti-selfheal.md §2e.
+          data:
+            tag: bluetti_push_dead
+
+  # 3a) …and take the card away when a push arrives again (also runs, harmlessly,
+  #     when the sensor first settles to `off`).
+  - id: bluetti_push_dead_cleared
+    alias: "Bluetti push dead: clear the notification when live updates return"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.bluetti_push_dead
+        to: "off"
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: bluetti_push_dead

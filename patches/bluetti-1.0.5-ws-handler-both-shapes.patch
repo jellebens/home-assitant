@@ -1,0 +1,37 @@
+Local patch for the BLUETTI custom integration on vesta (card #319, runbook
+bluetti-selfheal.md §2e). NOT applied by anything in this repo: an owner step.
+
+Against: bluetti-official/bluetti-home-assistant v1.0.5 (commit f1df72b),
+         custom_components/bluetti/models.py
+         sha256 before c8f10ea078d23312c4ebf905970977bb63ea1f516e61e4d1827207a5ff36cbf4
+         sha256 after  cfe58a38d83cf730a66c532ddd5de05b26cc40cb10f0175bc39d58c0486f86d6
+Why:     the cloud sends the device serial as data.deviceSn; v1.0.3–v1.0.5 read
+         only data.message.deviceSn, so every websocket push raises
+         KeyError('message'), which the listener swallows — and in cloud mode
+         nothing else refreshes the entities (upstream #171, #172, #176).
+Apply:   patch -p3 models.py < this file   (on a copy; then put it on vesta and
+         RESTART Home Assistant — an integration reload keeps the old module)
+Lost on: any HACS update / redownload of the integration.
+         binary_sensor.bluetti_push_dead (bluetti_selfheal >= 1.2.0) notices.
+
+--- a/custom_components/bluetti/models.py
++++ b/custom_components/bluetti/models.py
+@@ -63,7 +63,17 @@
+ 
+         res = json.loads(message)
+         # load api
+-        sn = res["data"]["message"]["deviceSn"]
++        # home-assitant card #319 (upstream #171 / #172 / #176): the cloud sends the
++        # serial as data.deviceSn OR as data.message.deviceSn. Accept both; a frame
++        # with neither is ignored instead of raising (the KeyError was swallowed by
++        # StompListener.__callback and no refresh was ever scheduled).
++        data = res.get("data") if isinstance(res, dict) else None
++        data = data if isinstance(data, dict) else {}
++        nested = data.get("message")
++        sn = (nested.get("deviceSn") if isinstance(nested, dict) else None) or data.get("deviceSn")
++        if not sn:
++            __LOGGER__.debug("ws message without a deviceSn, ignored")
++            return
+ 
+         device = self.get_device_by_sn(sn)
+         if device and device.control_mode != ControlMode.BLE:

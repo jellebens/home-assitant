@@ -1,9 +1,16 @@
-# Bluetti telemetry self-heal — cards #212, #214, #246, #259, #306
+# Bluetti telemetry self-heal — cards #212, #214, #246, #259, #306, #319
 
 Make the Bluetti / buzzbrick **cloud** integration self-recover so a transient
 DNS/network blip can't silently freeze the battery telemetry for ~44h again.
 
-**Package 1.1.0 (#306, 2026-10-04)** is the current behaviour, and
+**The integration itself is broken since 2026-09-18 (#319):** its websocket
+handler drops every push from the Bluetti cloud, so values only arrive when this
+package reloads the entry. The root cause, the fix (a one-line patch of the
+integration on vesta — an owner step) and package 1.2.0's `bluetti_push_dead`
+detector are in
+[§2e](#2e-values-only-arrive-at-a-reload--root-cause-and-fix-319).
+
+**Package 1.1.0 (#306, 2026-10-04)** is the behaviour 1.2.0 builds on, and
 [§2d](#2d-package-110--what-the-2026-09-12-incident-showed-306) is the place to
 start: the detection matrix, the reload and notification timeline, the
 `sensor.bluetti_report_ages` sensor, deploy and post-deploy checks. Where an older
@@ -377,16 +384,21 @@ throughout.)
 | All-zero (#214) | SoC, grid-in, AC-out all 0 | `bluetti_telemetry_all_zero` | yes | yes |
 | SoC-zero (#306) | SoC 0, power non-zero | `bluetti_telemetry_soc_zero` | no (did not help on 09-12; the force-refresh still runs) | yes |
 | Partial freeze (#306) | one of SoC / grid-in / AC-out silent, another entity reporting | `bluetti_telemetry_partial_freeze` (MAX `last_reported` age over those three > 10 min) | only with `bluetti_partial_freeze_enforce` on | only with enforce on |
-| Reports, but values only change at a reload | `last_reported` advances every 300 s, `last_updated` only at reloads | **nothing** — read `min_updated_s` on `sensor.bluetti_report_ages` | force-refresh every 15 min (which is the only thing delivering data) | no |
+| Push dead (#319) — values only change at a reload | `last_updated` only moves at reloads; `last_reported` may still advance (working-mode writes) | 1.1.0: **nothing**. 1.2.0: `bluetti_push_dead` (no value change without a reload for 30 min) | force-refresh every 15 min (which is the only thing delivering data) | 1.2.0: once, when it starts |
 
 The last row is not hypothetical: it is the state of the integration **since
-about 2026-09-18** and on 2026-10-04. On 2026-10-03 between 13:00 and 13:40,
+2026-09-18 09:16 UTC** and on 2026-10-04 — root cause and fix in
+[§2e](#2e-values-only-arrive-at-a-reload--root-cause-and-fix-319). On 2026-10-03 between 13:00 and 13:40,
 during a charge, SoC went 67 → 70 → 72 and each of those values arrived at a
 reload (13:00, 13:05, 13:20, 13:35) — nothing in between. A healthy day
 (2026-09-17) has ~1900 AC-out writes; these days have ~300. The lar is being fed
 one sample per reload. This package cannot tell that state from a battery that
 is idle, and reloading does not cure it; it is a separate problem (owner /
-upstream integration), listed in the PR as the first follow-up.
+upstream integration), listed in the PR as the first follow-up. (That follow-up
+is #319: §2e. Two things this section says turned out differently there — the
+"300 s report cadence" is not the integration reporting but the side effect of a
+working-mode write every 5 minutes, and a partial freeze cannot happen with this
+integration at all.)
 
 ### Partial freeze — why it only observes
 
@@ -469,7 +481,336 @@ In the "only at a reload" state the reloads are also the lar's samples. Their
 longest gap stays 15 min; the extra sample ~5 min after each force-refresh
 reload, which the false-stale reload happened to give, goes away.
 
+## 2e. Values only arrive at a reload — root cause and fix (#319)
+
+Investigated 2026-10-04, read-only: the integration's source and HACS metadata on
+vesta, the InfluxDB archive of Home Assistant (bucket `homeassistant`), the lar's
+log, and the upstream repository and issue tracker. Times are **UTC**. No
+credential, token or `.storage` config-entry data was read, and Home Assistant's
+log was not read from vesta — the one log excerpt used is the one the owner
+posted upstream on 2026-09-30.
+
+### In short
+
+- The integration is the official **`bluetti-official/bluetti-home-assistant`
+  v1.0.5**, unmodified (every `.py` file on vesta is byte-identical to the
+  upstream tag, commit `f1df72b`).
+- In cloud mode it has **one** source of live values: the Bluetti cloud pushes a
+  notification over a websocket, and on each notification the integration
+  re-reads the device over REST. **Nothing polls.** The only other read is one
+  REST fetch when the config entry is set up — that is the "value at a reload".
+- The push handler looks for the device serial at `data.message.deviceSn`. The
+  cloud sends it at `data.deviceSn`. Every push raises `KeyError: 'message'`, the
+  websocket listener catches and logs it, and no read is scheduled. The socket
+  stays connected, so nothing reconnects or recovers.
+- Upstream knows: issues **#171**, **#172** and **#176** (the last one opened by
+  the owner on 2026-09-30 with this exact log line from vesta). All three are
+  open, no maintainer has answered, and no release contains a fix (v1.0.5 of
+  2026-09-16 is the latest; `main` has not moved since).
+- **Fix:** a one-line change of the handler on vesta so it accepts both shapes
+  ([`patches/bluetti-1.0.5-ws-handler-both-shapes.patch`](patches/bluetti-1.0.5-ws-handler-both-shapes.patch)),
+  then a Home Assistant restart. Owner step, below. Package 1.2.0 adds the
+  detector that says whether it worked and that notices when an integration
+  update removes it again.
+
+### Timeline
+
+Integration and core versions are read from the archive of
+`update.bluetti_update` / `update.home_assistant_core_update`
+(`installed_version`); the last one from `/config/.HA_VERSION` and the file
+mtimes under `/config/custom_components/bluetti` (2026-09-20 19:03:57 +02:00).
+
+| When (UTC) | What | Source |
+|---|---|---|
+| 08-27 | upstream commit `ba9e7fc` "modify ws data struct": the handler changes from `res["data"]["deviceSn"]` to `res["data"]["message"]["deviceSn"]` | upstream git |
+| 08-31 13:58 | vesta: v1.0.2 → **v1.0.3** (first release with that change) | archive |
+| 09-02 23:50 | vesta: v1.0.3 → **v1.0.4** | archive |
+| 09-03 → 09-12 | healthy: ~84 AC-out changes an hour, around the clock; longest silence of all four entities 638 s (two gaps of 2.3 h and 4 h on 09-08 and 09-10 aside) | archive |
+| **09-12 06:42** | **first onset**: AC-out changes drop from ~84 to 12–16 an hour (one burst per reload). No version changed (v1.0.4 since 09-02, core 2026.9.1 since 09-10 23:16) | archive |
+| 09-12 | upstream #165 "Connection lost - goodbye" (v1.0.4, opened that day): the websocket drops and "the battery gets the data when reloaded but not anymore after that"; the app was affected too | upstream |
+| 09-12 22:50 → 09-13 21:00 | the SoC-zero / all-zero incident (§2d); 09-13 00:06 core → 2026.9.2 | archive |
+| 09-13 21:01 → 09-15 12:25 | archive dark | archive |
+| 09-15 01:02 | upstream maintainer on #165: "we have found it, and we are fixing it"; another user's push returns at 01:36 with nothing changed on his side | upstream |
+| 09-15 12:25 → 09-18 09:15 | healthy again (81–89 AC-out changes an hour; longest silence 232 s), still v1.0.4 | archive |
+| **09-18 09:16** | **second onset**: 7–8 AC-out changes per 5 min until 09:15, then one per reload. No version changed (v1.0.4, core 2026.9.2 since 09-13) | archive |
+| 09-18 09:14 | upstream #168: another user's two stations "first went offline at 09:14 UTC and then flapped all day"; Bluetti cloud trouble that day | upstream |
+| 09-20 17:00–17:07 | vesta: core → 2026.9.3, HAOS 18.2 → 18.3, integration → **v1.0.5**, restart. **No change**: 4 AC-out writes an hour before, 14 after — the reload cadence of the restarted self-heal | archive, mtimes |
+| 09-21 → 09-30 | upstream #171, #172: "cloud mode stops updating: `web_socket_message_handler` raises KeyError 'message' on every push", confirmed by seven users on eight models (an Apex 300 among them), the payload printed | upstream |
+| 09-30 08:03 | vesta: core → 2026.9.4, restart. No change | `.HA_VERSION` |
+| **09-30 08:04–08:25** | vesta's own log: `error from callback <bound method BluettiData.web_socket_message_handler …>: 'message'`, logger `custom_components.bluetti.api.websocket`, `websocket.py:165` — posted by the owner as upstream **#176** at 08:30 | upstream #176 |
+| 10-04 14:27 | `bluetti_selfheal` 1.1.0 active. Reloads at 14:40:05, 14:55:05, 15:10:05; values change at those and at no other time, while the battery goes from grid-in 2103 W to 987 W to 0 W and SoC 99 → 97 % | archive |
+
+### Mechanism (v1.0.5 as installed)
+
+Two places call `BluettiDevice._async_update()` (the REST read
+`GET …/ha/v1/deviceStates`, then `publish_updates()`, which makes every entity
+write its state):
+
+1. `__init__.py`, `async_setup_entry` → the `onBluettiSetup` event →
+   `_after_bluetti_setup_ok`: once, right after the entities are created. Until it
+   answers, the entities show the **placeholder** values stored in the config
+   entry when the device was added (on vesta: SoC 51 %, grid-in 2008 W, AC-out
+   607 W, working mode "Backup").
+2. `models.py`, `BluettiData.web_socket_message_handler`: on every STOMP
+   `MESSAGE` frame from `/ws-subscribe/user/<user>/notify`:
+
+   ```python
+   res = json.loads(message)
+   sn = res["data"]["message"]["deviceSn"]
+   ```
+
+   and only then `device.async_update()`. The frame the cloud sends (printed in
+   upstream #172) has `"message": "OK"` at the top level and the serial at
+   `res["data"]["deviceSn"]`, so the second line raises `KeyError('message')`.
+
+`api/websocket.py`, `StompListener.__callback` wraps the handler in
+`try/except Exception` and logs `error from callback …` at ERROR. Nothing else
+happens: no reconnect, no retry, no fallback.
+
+There is no third path. The sensors and the select are `should_poll = False`
+with no update method, the `iot_class` in the manifest (`local_polling`) is not
+what the cloud mode does, there is no option to turn polling on, and
+`homeassistant.update_entity` is a no-op. The manifest's `PollingCoordinator`
+is the Bluetooth mode only.
+
+**Why the entities still "report".** `BluettiDevice.set_state_value()` — every
+write to a Bluetti select or switch — ends in `publish_updates()` too, which
+re-writes all entities with the values the integration already holds:
+`last_reported` advances, nothing changes. The 300-second report cadence that
+§2d measured is the automation `automation.update_apex_300_working_mode`: in 7
+of 7 five-minute slots on 2026-10-04 the four entities reported in the second
+that automation's run ended, and in the slots where it wrote nothing (15:05,
+15:15) they did not report at all. (The automation lives in `automations.yaml`
+on vesta, which was not read; the link is the timing plus the code path.)
+
+Two consequences for this package:
+
+- `bluetti_telemetry_stale` (freshest `last_reported` older than 10 min) cannot
+  see a dead push while something writes the working mode every few minutes. It
+  measures "did anything make the integration write", not "is data arriving".
+  (When nothing writes for 10 minutes after a reload it will turn on until the
+  next force-refresh, and `bluetti_integration_alive` off with it — by the
+  template's logic; watch for it.)
+- A **partial freeze cannot happen**: one `publish_updates()` loop writes every
+  entity, so the four `*_s` ages on `sensor.bluetti_report_ages` are always equal
+  (they are, in every sample since 14:28). The open question of §2d — which
+  entities are "expected to report" — has the answer "all or none";
+  `input_boolean.bluetti_partial_freeze_enforce` should stay off, and the
+  detector can be removed in a later version.
+
+### Proven, and inferred
+
+| | Statement | Basis |
+|---|---|---|
+| proven | v1.0.5, unmodified, cloud mode | sha256 of every `.py` against the upstream tag; HACS record |
+| proven | the only live-update path is websocket push → REST read; no polling | the source |
+| proven | since 09-18 09:16 values change only at reloads, also mid-charge and mid-discharge | archive (10-03 13:00–13:40; 10-04 14:27–15:16) |
+| proven | on 09-30 the handler raised `KeyError: 'message'` on vesta | the owner's log excerpt in upstream #176 |
+| proven | the unpatched handler raises exactly that on the frame of #172, and the patched one schedules the refresh for both shapes | executed against the file read from vesta (PR, verification) |
+| proven | neither onset coincides with a change of the integration, of core or of HAOS on vesta | archive of the `update.*` entities |
+| inferred | the KeyError is the cause for the whole period 09-18 → today, not only on 09-30 | one log excerpt; the symptom is identical and unbroken, and two restarts (09-20, 09-30) did not change it |
+| inferred | the trigger on 09-18 09:14–09:16 was on Bluetti's side (the cloud started sending the flat shape to this account, during the cloud trouble others report for that minute) | timing only; nothing on vesta changed |
+| not established | the cause of the **first** episode (09-12 06:42 → 09-15). Same symptom, but upstream #165 documents a second way to get it on v1.0.4 — the websocket dropping without a working reconnect — on exactly those days | no log from those days |
+
+**What would settle the inferred rows, in under a minute:** Settings → System →
+Logs, search `bluetti`. Expected: `error from callback <bound method
+BluettiData.web_socket_message_handler …>: 'message'`, with a growing count.
+If instead the lines are `CONNECTED frame missing 'user-name' header, cannot
+subscribe`, `Websocket connection terminated: …`, `The BLUETTI WebSocket raised
+an error: …` or `Failed to send heartbeat: …`, the push channel is failing for
+another reason (authentication or transport) and the patch below will not help —
+stop and report the line. All of these are logged at ERROR, so the default log
+level shows them.
+
+### What a reload costs (why reload-polling is not the answer)
+
+From the archive, not estimated:
+
+- **Home Assistant stalls for ~5 seconds at every reload.** The force-refresh
+  fires at second 00; the entities come back at second 05, and the minutely
+  `sensor.bluetti_report_ages` sample — due at 00 — is written at **05** as well,
+  at each of the three reloads of 2026-10-04 (14:40:05, 14:55:05, 15:10:05). The
+  code says why: `StompClient.disconnect()` calls
+  `heartbeat_thread.join(timeout=5)` from the event loop while that thread sleeps
+  through its 55–60 s interval. Everything in HA waits: Z-Wave, the other
+  automations, the REST API the lar reads.
+- **Every reload publishes placeholder values as if they were measurements**:
+  SoC 51 %, grid-in 2008 W, AC-out 607 W, working mode "Backup", with a fresh
+  timestamp. On 2026-10-03 the archive holds 178 such points per entity — one per
+  reload. Usually the real values follow 70–110 ms later. Since 09-18, in 52 of
+  the ~1750 reloads where the step is visible on grid-in (3 %) the placeholder
+  stood for more than 5 s, in 5 for more than a minute, once (09-18 11:38) for
+  89 minutes. On **2026-10-04 15:10:05 → 15:11:51** it stood for 106 s. The lar's
+  "grid-input STALE" warning stops at that reload (last one 15:09:52): for those
+  106 s it was reading 2008 W / 51 % as a fresh sample of a battery that the
+  fetch then showed at 941 W / 97 %.
+- The entities, the working-mode select included, are unavailable for a second
+  or two; one new websocket session and one REST read against the cloud; one
+  leaked daily timer (`async_track_time_interval` in `start_token_check` is never
+  cancelled).
+
+At one reload per 15 minutes (1.1.0) that is 96 stalls and 96 placeholder
+publications a day. Feeding the lar's spike path (150 s freshness gate) by
+reloading would take one reload per two minutes: an hour of stalled Home
+Assistant a day and ~20 placeholder windows of more than 5 s. Not an option. The
+15-minute force-refresh stays as the stop-gap it is; nothing in 1.2.0 reloads
+more often.
+
+### Fix options, ranked
+
+| | Option | Verdict |
+|---|---|---|
+| 1 | **Patch the handler on vesta** to accept `data.deviceSn` and `data.message.deviceSn`, restart HA | **Recommended, now.** One line becomes ten; reported working by four users in upstream #171/#172; restores exactly what ran until 09-18 (one REST read per push, ~84 an hour); trivially reversible. Weakness: a HACS update or "Redownload" removes it silently — `bluetti_push_dead` (1.2.0) is there for that |
+| 2 | Update to a fixed upstream release | Does not exist. v1.0.5 is the latest; #171/#172/#176 are unanswered. When a v1.0.6 appears: read its handler before updating; if it accepts the flat shape, update and drop the patch |
+| 3 | Roll back | No. v1.0.3 and v1.0.4 have the same line. v1.0.2 reads the flat shape, but predates the OAuth-token change of v1.0.3 (its release note: without re-adding the integration "you will not receive real-time device messages") and the `wss://` fix; whether it still works against today's cloud is unknown |
+| 4 | A configuration change | None exists in cloud mode (see Mechanism) |
+| 5 | Deliberate reload-polling at a faster cadence | No — see the cost above. Keep 15 min as the safety net |
+| 6 | The community fork `bluetti-community/bluetti-home-assistant` (1.5.5, same `bluetti` domain) | Later, and an owner decision. Checked in its source: it accepts both shapes **and** polls REST every 30 s, which removes the single point of failure for good and meets the lar's 150 s gate even with the push dead. But it is a large rewrite by one maintainer (new dependencies, coordinator, Modbus), eight releases in eleven days, five stars, and it would hold the Bluetti account token and command a live battery. Not audited here. If upstream stays silent for weeks or the push dies again in a new way, evaluate it properly (entity ids and the working-mode select must survive the switch) |
+| 7 | Bluetooth mode of the official integration | A candidate for the local source of #217, not a quick fix. The BLE library lists `AP300` as supported and polls locally every 10 s, but upstream marks HAOS ≥ 2026.3 / aarch64 as untested, there are open BLE-encryption issues (#169, #174, #175), switching mode means re-adding the device, and vesta must reach the battery over Bluetooth |
+| 8 | Local Modbus TCP (#309) | The real exit. For that card, unverified: a contributor wrote to the owner in upstream #176 that Apex 300 IoT firmware v8026.14 exposes Modbus TCP once enabled on the unit's own access-point page |
+
+### Owner steps — the patch (live-prod, not done by the agent)
+
+One file changes on vesta: `/config/custom_components/bluetti/models.py`. The
+agent was not allowed to write to vesta in this card, and a helper script that
+would do it over ssh was refused by the permission system, so this is a manual
+edit.
+
+1. *(optional, 1 min)* Confirm the log line — "What would settle…" above.
+2. Deploy package 1.2.0 first, **without** restarting yet
+   (`scripts/deploy.sh bluetti_selfheal` copies the file; skip the reload if you
+   restart in step 4 anyway) — see §3.
+3. Open `/config/custom_components/bluetti/models.py` (File editor or Studio Code
+   Server add-on; or `sudo vi` over ssh). In `web_socket_message_handler`
+   (line 66) replace the one line
+
+   ```python
+           sn = res["data"]["message"]["deviceSn"]
+   ```
+
+   with (same indentation, 8 spaces):
+
+   ```python
+           data = res.get("data") if isinstance(res, dict) else None
+           data = data if isinstance(data, dict) else {}
+           nested = data.get("message")
+           sn = (nested.get("deviceSn") if isinstance(nested, dict) else None) or data.get("deviceSn")
+           if not sn:
+               __LOGGER__.debug("ws message without a deviceSn, ignored")
+               return
+   ```
+
+   The patch file in `patches/` is the same change with a comment block, as a
+   unified diff against the upstream file (`patch -p3 models.py < …` on a copy).
+   Checksums, to know what is on vesta at any time
+   (`sudo sha256sum /config/custom_components/bluetti/models.py`):
+   upstream v1.0.5 `c8f10ea078d23312c4ebf905970977bb63ea1f516e61e4d1827207a5ff36cbf4`,
+   with the patch file applied `cfe58a38d83cf730a66c532ddd5de05b26cc40cb10f0175bc39d58c0486f86d6`
+   (a hand edit without the comment block gives a third value — fine).
+4. **Restart Home Assistant** (Settings → System → Restart). Reloading the
+   integration is not enough: Python keeps the module it already imported.
+5. Check, within five minutes of the restart:
+   - Settings → System → Logs, search `bluetti`: no `error from callback` line.
+   - `sensor.bluetti_report_ages`: `ac_out_updated_s` and `min_updated_s` stay
+     under a minute or two **without a reload in between**, and `push_s` drops
+     under ~360 and stays there. `binary_sensor.bluetti_push_dead` is `off`.
+   - The history of `sensor.office_buzzbrick_…_alternating_current_out_power`
+     moves every ~45 s again.
+   - *Bluetti force-refresh* stops running (Settings → Automations → last
+     triggered stops advancing): it only fires when nothing changed for 10 min.
+   - The lar's log stops printing `spike battery grid-input STALE`.
+6. If the values still only move at reloads: read the log line (step 1's list),
+   leave the patch in — it is harmless — and report.
+
+**Rollback:** put the original line back (or HACS → BLUETTI → ⋮ → Redownload →
+v1.0.5, which restores the upstream file) and restart Home Assistant. The state
+after a rollback is the state of 2026-10-04: one sample per 15-minute reload.
+
+**After every update of the integration** (HACS shows one, or
+`binary_sensor.bluetti_push_dead` turns on and the phone says "Bluetti live
+updates stopped"): compare the checksum, look at the line in the new
+`models.py`. If upstream now reads `data.deviceSn` or both, nothing to do.
+If it still reads only the nested shape, repeat step 3 and 4.
+
+### Package 1.2.0 — `bluetti_push_dead`
+
+Additive. Nothing that 1.1.0 does changes: same detectors, same two reload
+automations, same `bluetti_integration_alive` contract with the lar.
+
+| Entity | What it is |
+|---|---|
+| `sensor.bluetti_last_push_update` | when a Bluetti value last changed **without a reload around it**. A change counts when old and new are real values, they differ, and the old value was itself set more than 30 s after the entities last came back from unavailable (attribute `last_reload_seen`) — so the placeholder → first-fetch step never counts, however slow the fetch. Moves at most once per 5 min |
+| `push_s` on `sensor.bluetti_report_ages` | its age in seconds, once a minute, archived in InfluxDB. Healthy: under ~6 min. Push dead: climbs for hours, straight through the reloads that reset every `*_updated_s` |
+| `input_number.bluetti_push_dead_threshold_minutes` | 30 (its floor). The longest healthy silence in the archive is 638 s |
+| `binary_sensor.bluetti_push_dead` | `on` when `push_s` exceeds the threshold. Notify only: not in `bluetti_integration_alive`, triggers no reload |
+| automation *Bluetti push dead: tell the owner…* | one persistent notification plus one phone push when it turns on (not while a DOWN episode is running, not again after an HA restart); the card is dismissed when a push arrives |
+
+Deployed while the push is still dead, it notifies once, 30 minutes after the
+first reload it sees. That is correct.
+
+Deliberately left alone, each a decision for the owner or another card:
+
+- **`bluetti_integration_alive` does not include push-dead.** If it did, the lar
+  would hold from the moment of the deploy. Once the push is back and has stayed
+  back, making the lar distrust a sample older than a few minutes (via `push_s`,
+  which is readable over REST) is the natural next step — a lar card.
+- **The placeholder values** (51 % / 2008 W / 607 W). The lar should never plan
+  on them. The patch makes them rare (reloads stop), but every HA restart still
+  publishes them once. A lar-side guard, or an "integration settling" flag from
+  this package, is a follow-up.
+- **`automation.update_apex_300_working_mode`** writes its own state ~27,000
+  times a day into the recorder and InfluxDB (27,102 on 2026-10-03: in most
+  5-minute slots it triggers every 2 s for a minute). Not part of this package;
+  worth its own card.
+- The retired `packages/bluetti_battery_economics.yaml` is still present on
+  vesta (2026-05-04).
+
+### Upstream
+
+Nothing to file: #176 is the owner's own report, #171 and #172 carry the
+analysis. What the maintainers do not have yet is in the PR description as a
+ready-to-post comment for #171 (the owner's call): the onset on v1.0.4 three
+days before the first upstream report, the proof that no client-side change
+coincided, and three defects nobody has reported — the 5-second event-loop stall
+in `disconnect()`, the placeholder values published at every setup, and the
+missing polling fallback.
+
+### What to watch afterwards
+
+- `push_s` (InfluxDB, entity `bluetti_report_ages`): the acceptance metric.
+  Under ~360 s around the clock = fixed. A saw-tooth that only resets with the
+  force-refresh = not fixed.
+- Reload count: with the push working the force-refresh should fire a handful of
+  times a day at most, against 96 (it only fires when no value changed for
+  10 minutes; the longest such silence on the healthy days was 638 s).
+- A second cloud-side shape change, or an integration update, shows up as the
+  "Bluetti live updates stopped" notification within 30–35 minutes.
+
 ## 3. Apply on vesta (owner step — live-prod, not done by the agent)
+
+### Deploying 1.2.0 (#319)
+
+One file: `packages/bluetti_selfheal.yaml`. From a checkout of `main` with the
+PR merged: `scripts/deploy.sh --check bluetti_selfheal` (expect git `1.2.0`,
+vesta `1.1.0`), then `scripts/deploy.sh bluetti_selfheal`. A reload is enough
+for the package (template, automation, input_number); the integration patch of
+§2e needs a full restart, so do both with one restart.
+
+Afterwards, in Developer Tools → States:
+
+- `input_number.bluetti_push_dead_threshold_minutes` = **30**.
+- `sensor.bluetti_last_push_update`: `unknown` until the first Bluetti state
+  change, then a time; attribute `last_reload_seen` is set at the first reload it
+  sees.
+- `sensor.bluetti_report_ages` has a `push_s` attribute (a number once the sensor
+  above has a state).
+- `binary_sensor.bluetti_push_dead`: `off` with the patch in place. Without the
+  patch it turns `on` after 30 min and the phone gets one "Bluetti live updates
+  stopped".
+- Everything listed under 1.1.0 below is unchanged.
+
+To go back: `git revert` the 1.2.0 commit and deploy again; the three new
+entities and the two automations disappear, nothing else changes.
 
 ### Deploying 1.1.0 (#306)
 

@@ -35,8 +35,15 @@ side. The header is how you tell which behavior is actually live:
   wedge it for hours — #212; all-zero #214; `bluetti_integration_alive` for the
   lar #259; package 1.1.0, #306: never-give-up reloads at one per 15 min, owner
   notified on the phone after 30 min and every 2 h, `sensor.bluetti_report_ages`
-  = the true per-entity report ages over REST):
-  - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook (start at §2d)
+  = the true per-entity report ages over REST; package 1.2.0, #319:
+  `binary_sensor.bluetti_push_dead` — the integration's cloud push delivers
+  nothing and values only arrive at a reload, the state since 2026-09-18; the
+  cure is a patch of the integration itself on vesta, an owner step):
+  - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook (start at §2d; the
+    integration's root cause, the patch and what a reload costs are §2e)
+  - [patches/bluetti-1.0.5-ws-handler-both-shapes.patch](patches/bluetti-1.0.5-ws-handler-both-shapes.patch)
+    — the one local patch for the BLUETTI custom integration (upstream #171 /
+    #172 / #176); lost on every HACS update of the integration
   - [packages/bluetti_selfheal.yaml](packages/bluetti_selfheal.yaml) — drop-in package
 - Ceres — Robigus plant-health alerts + advice as HA sensors + notifications (one
   source of every hydroponic unit's conditions; ceres cards #293/#294), and the
