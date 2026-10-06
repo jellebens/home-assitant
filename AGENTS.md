@@ -13,6 +13,9 @@ side. The header is how you tell which behavior is actually live:
 
 ## Project Map
 
+- Architecture decision records (decisions, not runbooks — ADR-0001: all HA
+  telemetry archived in InfluxDB forever, bucket retention owned by gitops #290):
+  - [docs/adr/README.md](docs/adr/README.md)
 - Main stabilization docs:
   - [7-day-home-assistant-stabilization-checklist.md](7-day-home-assistant-stabilization-checklist.md)
   - [home-assistant-stabilization-mcp-prompts.md](home-assistant-stabilization-mcp-prompts.md)
