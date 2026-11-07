@@ -513,3 +513,35 @@ Consequences to know about:
   (§6) in the morning and move BLE to a dedicated radio (§9: ESPHome proxy next to the
   rack, or a USB dongle on vesta with the HA Bluetooth integration's passive scanning
   off) before trying again.
+
+### 11.2 Charge test 22:36–22:45Z: control works, power readings flap to 0, the lar's spike responder fights the charge
+
+Owner-requested. `select.apex300_working_mode` → CHARGING made the automation write
+`Backup` to the Bluetti select within 1 s; the HEM import rose 0.8 → 2.8 kW and
+`jupiter_lar_actual_mode` read 1 (charging). PASSTHROUGH → `Time of Use` within 2 s. So
+**both directions of control over BLE work.** The test was ended at 22:45:40Z with
+PASSTHROUGH re-applied.
+
+Two defects showed up:
+
+1. **`…grid_input_power` and `…alternating_current_out_power` alternate between the true
+   value and 0** on consecutive BLE polls (HA archive, 18 s spacing: grid-in 2093 → 0 →
+   2091 → 0 while charging; AC-out 826 → 0 → 835 → 0 with ~800 W on the rack). SoC and
+   the mode select do not flap. Most likely two register blocks in the device's proto
+   file both map to the same fnCode and the second one carries 0 (`parse_oak_state_data`
+   merges whatever each polling command returns). Needs the proto file / an upstream
+   issue; in the meantime any consumer must treat a 0 from these two sensors as
+   "unknown", not "zero watts".
+2. **The lar's spike responder (#177/#178) fights every charge.** Its corrected house
+   signal is `max(0, import − battery_grid_input)`; with battery_grid_input flapping to
+   0 the battery's own 2 kW charge looks like a house spike: spike TRIGGER → DISCHARGING
+   at 22:37:52 and 22:42:23 (each ~90 s after a `Backup`), spike RELEASE → PASSTHROUGH
+   two minutes later. The HA automations are not involved. In cloud mode the readings
+   do not flap, so this never happened there. On BLE, a night in which the plan charges
+   means a CHARGING → DISCHARGING → PASSTHROUGH loop every 2–4 min — never unsafe, but
+   it cycles the battery and defeats the charge.
+
+Fix candidates: lar — hold the spike correction at the last non-zero battery grid-in
+while the commanded mode is CHARGING (hephaestus card); integration — proto/upstream
+fix for the duplicate field; or #309 Modbus as the local source. Until one lands,
+**Cloud Control is the safe overnight mode** (§6).
