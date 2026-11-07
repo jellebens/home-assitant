@@ -473,3 +473,43 @@ product list and the proto file and may refresh `server_key` (≤ 1×/12 h). An 
 restart or integration reload during a Bluetti cloud outage therefore fails setup
 (entities missing → lar hold). Prefer not to reload the integration between 15:00Z and
 the evening recovery.
+
+### 11.1 First 20 minutes on BLE: the link flaps
+
+HA archive (`binary_sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected`,
+2026-11-07 UTC): off 22:12:40 → **on 22:13:05** → off 22:15:31 → **on 22:18:08** → off 22:20:24
+→ **on 22:27:54**. Connected stretches of 146 s and 136 s, gaps of 157 s and 450 s. While the
+link is off every Bluetti entity is `unavailable`: HA's `binary_sensor.bluetti_telemetry_stale`
+turned on 22:20:24–22:27:54, `bluetti_integration_alive` off 22:21–22:27, and the lar's
+`jupiter_lar_actual_mode_known` (measured mode from grid-in − AC-out, so it needs both
+reads) follows the link exactly (avg 0.25 over 22:15–22:25 vs 1.0 all day in cloud mode).
+`bluetoothctl info` on vesta at 22:28:29 showed `Connected: yes`, RSSI −56, so the drops are
+not range; the integration's own read loop (`device_reader_v2.read_data`: a 10 s
+`BleakScanner.discover` **before every poll** while the HA Bluetooth integration owns the
+same hci0, then the encrypted session; a `TimeoutError`/`BleakError` → `_stop_notify`
+→ disconnect) is the prime suspect, together with the integration setting the
+connection up again on the next poll rather than keeping it.
+
+Consequences to know about:
+
+- **Self-heal interplay.** `bluetti_selfheal`'s reload automation fires when
+  `bluetti_telemetry_stale` is on for 2 min, paced by its cooldown (15 min in the first
+  hour of an episode, 60 min after that — the 22:22 outage hit the slow phase, last reload
+  22:00:30, so nothing reloaded and BLE came back on its own). A reload in BLE mode
+  re-runs setup, which needs the cloud (product list, proto file, `.so` checksum). With the
+  cloud up that is a harmless BLE re-establish; **during the 15:00Z cutoff a BLE drop
+  longer than the 2 min debounce + cooldown means a reload that FAILS setup → entities
+  missing until the cloud returns** (the lar holds PASSTHROUGH either way, as it does
+  today in cloud mode).
+- **`sensor.bluetti_report_ages` / `bluetti_last_push_update` discount BLE reconnects**:
+  the package treats "any of the four entities going unavailable → value" as a reload and
+  ignores the first changes after it, so the push age the lar reads jumps at every
+  reconnect (521 s at 22:28 although values had been live until 22:20). Hestia follow-up:
+  teach the package the difference between a reload and a BLE reconnect (e.g. watch
+  `…bluetooth_connected`).
+- A ~50 % link duty cycle means roughly half of the lar's 15-min planning cycles find the
+  entities unavailable and hold. Watch `jupiter_lar_battery_telemetry_stale` and
+  `JupiterLarPlaceholderHold` tonight; if the holds dominate, roll back to Cloud Control
+  (§6) in the morning and move BLE to a dedicated radio (§9: ESPHome proxy next to the
+  rack, or a USB dongle on vesta with the HA Bluetooth integration's passive scanning
+  off) before trying again.
