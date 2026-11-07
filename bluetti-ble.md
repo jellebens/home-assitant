@@ -435,3 +435,41 @@ ssh -o HostKeyAlias=vesta.local admin@192.168.50.18 'sudo jq -r ".data.entities[
 ssh -o HostKeyAlias=vesta.local admin@192.168.50.18 'cat /config/custom_components/bluetti/manifest.json; sudo sha256sum /config/custom_components/bluetti/models.py; ls /config/custom_components/bluetti/ble/lib/'
 curl -sS https://download.bluetti.app/ha-libs/20260908/linux/SHA256SUMS
 ```
+
+## 11. As-built — the switch was performed on 2026-11-07
+
+Owner "go" at ~19:50Z, switch target: **Bluetooth Control**. Timeline (UTC):
+
+| When | What |
+|---|---|
+| 20:03 | Cloud-mode config entry deleted (agent, from the HA UI in the Claude browser pane). 13 entities moved to `deleted_entities`. |
+| 20:03–22:12 | Three attempts to re-add through the agent's browser pane lost the flow dialog at the `my.home-assistant.io` → `/auth/external/callback` hand-off (pane closes the tab, user-started flows are not listed by `config_entries/flow/progress`). **Do the add in your own browser**: the OAuth popup must return to the same HA tab that owns the dialog. |
+| 22:12:39 | Owner re-added the integration in their own browser: device `AP300 - AP3002532000565690` ticked, Control mode **Bluetooth Control**, confirm mapping 10 / 120 / 5. New entry `01M6W149G1W8FET5YDCWNTFGF4`, `data.products[0].control_mode = bluetooth`, `server_key` stored (512 chars), entry keys `auth_implementation, products, token`. |
+| 22:12 | All 14 entities re-created with **identical entity ids** (unique_id `<SN>_<fnCode>`, restored from `deleted_entities`, 0 left over). The five ids from §5 step 6 needed no rename. |
+| 22:15 | First BLE reading reached the lar: SoC 64 (frozen since the 15:30Z cloud cutoff) → 47 live; `jupiter_lar_battery_report_ages_push_seconds` 25910 → 53 s (push-aware freshness works with the BLE feed, `sensor.bluetti_report_ages` keeps functioning); `jupiter_lar_battery_telemetry_stale` 0; placeholder rejections flat. |
+| 22:15:10 | First control write over BLE: lar log `applied live: select -> 'PASSTHROUGH'`. `jupiter_lar_actual_mode_known` dipped 1 → 0 for ~4 min (automation runs on state change + every 5 min, then the BLE poll reads the mode back), then `jupiter_lar_actual_mode` 2 → 0 at 22:19:56 with `actual_mode_known` 1. **Actuation over BLE confirmed.** |
+
+The lar held PASSTHROUGH for the whole 20:03–22:12 window (its metrics were frozen,
+`jupiter_lar_battery_telemetry_age_seconds` constant), as it had done since the 15:30Z
+cutoff anyway. No power interruption, no manual control write by the agent.
+
+**Placeholder triple of the new entry** (§5 step 8):
+`SOC 0 / GridAllTotalPower 0 / ACLoadAllTotalPower 0` — the stateList snapshot was taken
+while the cloud was in its daily cutoff. In BLE mode the sensors are only added after the
+coordinator's first successful poll and report `unavailable` (not the seed value) while
+`bluetooth_connected` is off, so a placeholder publication is unlikely; the triple is
+added to `ha.battery_placeholder_signatures` defensively anyway (gitops branch
+`card-358`, PR linked on the Trello card). The old 51/2008/607 triple stays for the
+Cloud-Control rollback.
+
+**Not verified directly:** the HA states themselves (`binary_sensor …bluetooth_connected`,
+the four sensors) — the agent path has no HA API token; the SSH add-on shell has no
+`SUPERVISOR_TOKEN`; the HA MCP server only sees exposed entities. The evidence above is
+the lar's own reads and log. Also not yet observed: the 15:00Z cutoff with BLE live
+(§7) — first opportunity 2026-11-08 15:00–15:06Z.
+
+**Still cloud-dependent after the switch:** every integration (re)load fetches the
+product list and the proto file and may refresh `server_key` (≤ 1×/12 h). An HA
+restart or integration reload during a Bluetti cloud outage therefore fails setup
+(entities missing → lar hold). Prefer not to reload the integration between 15:00Z and
+the evening recovery.
