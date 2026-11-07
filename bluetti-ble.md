@@ -545,3 +545,14 @@ Fix candidates: lar — hold the spike correction at the last non-zero battery g
 while the commanded mode is CHARGING (hephaestus card); integration — proto/upstream
 fix for the duplicate field; or #309 Modbus as the local source. Until one lands,
 **Cloud Control is the safe overnight mode** (§6).
+
+### 11.3 End-to-end fixes in flight (2026-11-08 00:30Z)
+
+| Link in the chain | Fix | Where | Deploy |
+|---|---|---|---|
+| Lar spike correction trusts a flapping 0 grid-in while charging (§11.2) | zero-flap guard: a sub-floor grid-in while CHARGING is commanded is UNKNOWN — hold the last plausible reading ≤ 60 s, else no sample; same guard withholds a contradicting measured mode. Flag `spike_responder.battery_grid_input_zero_guard` (default `off`), counter `jupiter_lar_battery_grid_input_zero_guard_total` | jellebens/jupiter#157 (card #359) | jupiter release → image tag bump in gitops **together with** the flag set to `on` for tervuren (never the flag before the image: the running lar rejects unknown keys) |
+| A lar command issued during a BLE gap is lost until the UI automation's 5-min tick | `packages/bluetti_ble.yaml` 1.0.0: re-assert the mapped option 15 s after the link returns when the two selects disagree; `binary_sensor.bluetti_ble_link`; 10-min link-down notice | jellebens/home-assitant#37 (card #360) | `scripts/deploy.sh bluetti_selfheal bluetti_ble`, HA restart outside 15:00–23:00Z |
+| Self-heal counts a BLE reconnect as a reload; reload 2 min into a gap the link closes itself | `bluetti_selfheal.yaml` 1.3.0: `last_reload_seen` keys off the link sensor; `input_number.bluetti_ble_reconnect_grace_minutes` (≥ 10) before a reload while the link is `off` | same PR | same |
+| Flapping zeros / link drops in the integration itself | open (card #360 items 1–2: proto duplicate field, scan-before-poll) | — | — |
+
+Chain runbook: [bluetti-ble-chain.md](bluetti-ble-chain.md) (lands with #37).
