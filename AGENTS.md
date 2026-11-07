@@ -48,6 +48,11 @@ side. The header is how you tell which behavior is actually live:
     — the one local patch for the BLUETTI custom integration (upstream #171 /
     #172 / #176); lost on every HACS update of the integration
   - [packages/bluetti_selfheal.yaml](packages/bluetti_selfheal.yaml) — drop-in package
+  - [bluetti-ble.md](bluetti-ble.md) — Apex 300 over Bluetooth (cards #358 → #217):
+    feasibility verdict (vesta's onboard hci0 sees the unit at −55 dBm, v1.0.5
+    supports AP300 over BLE) and the OWNER-GATED switch runbook — v1.0.5 has no
+    reconfigure path, so the switch is delete + re-add, with the lar's five
+    entity ids verified in the same window, rollback, and the 15:00Z test
 - Ceres — Robigus plant-health alerts + advice as HA sensors + notifications (one
   source of every hydroponic unit's conditions; ceres cards #293/#294), and the
   trace through HA (ceres #302, ADR-0013): every sensor keeps the document's
