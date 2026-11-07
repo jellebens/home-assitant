@@ -41,7 +41,9 @@ side. The header is how you tell which behavior is actually live:
   = the true per-entity report ages over REST; package 1.2.0, #319:
   `binary_sensor.bluetti_push_dead` — the integration's cloud push delivers
   nothing and values only arrive at a reload, the state since 2026-09-18; the
-  cure is a patch of the integration itself on vesta, an owner step):
+  cure is a patch of the integration itself on vesta, an owner step; package
+  1.3.0, #360: BLE-aware — a Bluetooth reconnect is no longer read as a reload,
+  and the reload waits a 10-min grace for the link to return by itself):
   - [bluetti-selfheal.md](bluetti-selfheal.md) — runbook (start at §2d; the
     integration's root cause, the patch and what a reload costs are §2e)
   - [patches/bluetti-1.0.5-ws-handler-both-shapes.patch](patches/bluetti-1.0.5-ws-handler-both-shapes.patch)
@@ -66,6 +68,22 @@ side. The header is how you tell which behavior is actually live:
     telemetry into HA over MQTT (no firmware change needed - the GIGA already
     publishes) plus the level interlock; note the probe is a TOP-UP gauge and
     is blind below 8.2 L, so this is not true dry-run protection
+- Bluetti over Bluetooth — the lar → template select → UI automation → Bluetti
+  select → BLE chain made link-aware (card #360; the integration runs in
+  Bluetooth Control since 2026-11-07, its link drops for minutes at a time and
+  every Bluetti entity is `unavailable` meanwhile — only
+  `sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected` stays
+  readable, and everything here keys off it; inert in cloud mode):
+  - [bluetti-ble-chain.md](bluetti-ble-chain.md) — the chain in words, where each
+    package hooks in, deploy (`scripts/deploy.sh bluetti_selfheal bluetti_ble`
+    + HA restart outside 15:00–23:00Z), rollback
+  - [packages/bluetti_ble.yaml](packages/bluetti_ble.yaml) — drop-in package
+    (1.0.0): `binary_sensor.bluetti_ble_link`, re-asserts the working mode the
+    lar demands within 15 s of the link returning (same mapping as the UI
+    automation "Update Apex 300 Working mode", which is NOT in this repo and
+    is not replaced), notifies when the link has been down 10 min. Reloads
+    nothing. A 0 W from the BLE grid-in / AC-out sensors means "unknown", not
+    zero — no package here consumes them
 - Bluetti battery optimizer (price-aware charge/discharge + ML + savings reporting):
   - [zeus/](zeus/) — standalone Python service; see its [README.md](zeus/README.md)
 

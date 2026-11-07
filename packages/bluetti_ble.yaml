@@ -1,0 +1,207 @@
+# Bluetti Apex 300 over Bluetooth — the control chain made link-aware (card #360)
+# version: 1.0.0
+#   1.0.0 (2026-11-08) card #360. First version. Three things, all ADDITIVE and all
+#                      inert in cloud mode (the Bluetooth sensor does not exist there):
+#                      binary_sensor.bluetti_ble_link (the BLE link as an on/off entity
+#                      that never goes unavailable), the automation that re-asserts the
+#                      working mode the lar demands as soon as the link comes back, and a
+#                      persistent notification when the link has been down for 10 min.
+#                      Reloads nothing, writes nothing but the one select option the UI
+#                      automation would write anyway.
+# Bump on EVERY applied change (owner rule 2026-09-03): patch for fixes,
+# minor for features — and update this header's history with it.
+# ===========================================================================
+# Companion runbook (the chain in words, where each package hooks in, deploy,
+# rollback): ../bluetti-ble-chain.md. The switch to BLE itself and what the
+# integration does in that mode: ../bluetti-ble.md (card #358).
+#
+# This is a drop-in Home Assistant *package*. It is NOT auto-deployed: deploy
+# with `scripts/deploy.sh bluetti_ble` (card #299), which copies it to
+#   vesta:/config/packages/bluetti_ble.yaml
+# `configuration.yaml` on vesta already enables packages.
+#
+# ---------------------------------------------------------------------------
+# THE CHAIN THIS PACKAGE PROTECTS (nothing in it is replaced — see the runbook)
+#
+#   jupiter-lar  --writes-->  select.apex300_working_mode     (template select, UI helper;
+#                             DISCHARGING / PASSTHROUGH / CHARGING, backed by
+#                             input_text.apex300_mode_internal)
+#       --state change, and every 5 min-->  automation "Update Apex 300 Working mode"
+#                             (UI-managed, vesta /config/automations.yaml, id 1771413777556;
+#                             NOT in this repo, NOT duplicated here)
+#       --select.select_option-->  select.office_buzzbrick_ap3002532000565690_working_mode
+#                             (the Bluetti integration's select; CHARGING -> "Backup",
+#                             DISCHARGING -> "Custom", PASSTHROUGH -> "Time of Use")
+#       --BLE write SetCtrlWorkMode-->  the Apex 300
+#       --next BLE poll (10 s)-->  the select reads the mode back; the lar measures it
+#                             from grid-in minus AC-out (jupiter_lar_actual_mode).
+#
+# THE GAP (bluetti-ble.md §11.1): since the switch to Bluetooth Control on
+# 2026-11-07 22:12Z the BLE link drops every few minutes (connected stretches of
+# ~2.5 min, gaps of 2.5–7.5 min). While it is down EVERY Bluetti entity is
+# `unavailable`, the select included — a `select.select_option` on it fails, so a
+# lar command issued in a gap is lost until the UI automation's next 5-minute tick.
+# The one Bluetti entity that stays available through a gap is
+#   sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected
+# (`sensor.` domain, state `on`/`off`; `unavailable` only while the config entry
+# is reloading or failed to set up; absent — `unknown` to a template — in cloud
+# mode). Everything below keys off that one entity.
+#
+# WHAT THIS PACKAGE DOES NOT DO
+#  * It never reloads the integration (that is bluetti_selfheal's job, 1.3.0 of
+#    which knows a BLE reconnect from a reload).
+#  * It never decides a mode. `demanded` below is always what
+#    select.apex300_working_mode says, i.e. what the lar last wrote; the mapping is
+#    a copy of the UI automation's and must be changed in both places or neither.
+#  * It never writes when the two selects already agree, or when either side is
+#    unknown/unavailable, or when the mapped option is not among the Bluetti
+#    select's options — so a cloud-mode rollback, a renamed option or a half-loaded
+#    entry can only make it do nothing.
+#  * It does not reason about the power readings. Known defect to keep in mind for
+#    anything that will (bluetti-ble.md §11.2): over BLE `…grid_input_power` and
+#    `…alternating_current_out_power` alternate between the true value and 0 on
+#    consecutive polls (~18 s). A 0 from those two is "unknown", never "zero
+#    watts". SoC and the working-mode select do not flap. bluetti_selfheal's
+#    all-zero detector is safe against it (SoC must read 0 too, and it needs 2 min
+#    continuously on, which an alternating reading never gives).
+# ===========================================================================
+
+template:
+  # --- The BLE link as a binary sensor ---------------------------------------
+  # on  = the integration reports its Bluetooth client connected.
+  # off = anything else: link down (`off`), entry reloading or failed setup
+  #       (`unavailable`), cloud mode or no Bluetti integration at all (sensor
+  #       absent → `unknown`). Deliberately never `unavailable` itself, so a
+  #       dashboard tile, a condition or the lar can read it as a plain on/off at
+  #       all times; `source` says which of the three "off" cases it is.
+  - binary_sensor:
+      - name: Bluetti BLE Link
+        unique_id: bluetti_ble_link
+        device_class: connectivity
+        icon: mdi:bluetooth-connect
+        state: >
+          {{ is_state('sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected', 'on') }}
+        attributes:
+          # ble       = the Bluetooth sensor exists and has a verdict (on/off)
+          # reloading = it exists but is `unavailable` (entry reload / failed setup)
+          # absent    = no such entity: cloud mode, or the integration is gone
+          source: >
+            {% set s = states('sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected') %}
+            {{ 'ble' if s in ['on', 'off'] else ('reloading' if s == 'unavailable' else 'absent') }}
+          bluetooth_address: >
+            {{ state_attr('sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected', 'bluetooth_address') }}
+          # When the current `off` began (the sensor's own last_changed); none while
+          # on. Static between transitions, so this entity writes only on a change.
+          down_since: >
+            {% set s = states['sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected'] %}
+            {{ s.last_changed.isoformat() if s is not none and s.state == 'off' else none }}
+
+automation:
+  # 1) Re-assert the working mode when the link returns. ----------------------
+  #    Trigger: the Bluetooth sensor has read `on` for 15 s — one full BLE poll
+  #    interval (10 s) plus margin, so the Bluetti select has been re-created from
+  #    a fresh read of the unit's actual mode by the time the condition looks at it.
+  #    No `from:` on purpose: `unavailable` → `on` (the entry came back from a
+  #    reload) is as good a moment to compare the two selects as `off` → `on`.
+  #    Condition: the two selects disagree, with both sides readable and the
+  #    mapped option really offered by the Bluetti select.
+  #    Action: the same `select.select_option` the UI automation issues — one
+  #    write, logged in the logbook against the Bluetti select so a re-assert can
+  #    be told from the UI automation's own 5-minute write.
+  #    Worst case if it fires needlessly: the unit is told the mode it already has.
+  - id: bluetti_ble_reassert_working_mode
+    alias: "Bluetti BLE: re-assert working mode when the link returns"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected
+        to: "on"
+        for: "00:00:15"
+    variables:
+      # The UI automation's mapping, verbatim (vesta automations.yaml id 1771413777556).
+      # '' when select.apex300_working_mode is unknown/unavailable or holds a
+      # value outside the three — then nothing is written.
+      demanded: >
+        {% set m = {'CHARGING': 'Backup', 'DISCHARGING': 'Custom', 'PASSTHROUGH': 'Time of Use'} %}
+        {{ m.get(states('select.apex300_working_mode'), '') }}
+      actual: >
+        {{ states('select.office_buzzbrick_ap3002532000565690_working_mode') }}
+    condition:
+      - condition: template
+        value_template: >
+          {% set opts = state_attr('select.office_buzzbrick_ap3002532000565690_working_mode', 'options') or [] %}
+          {{ demanded != ''
+             and actual not in ['unknown', 'unavailable']
+             and demanded in opts
+             and actual != demanded }}
+    action:
+      - service: select.select_option
+        target:
+          entity_id: select.office_buzzbrick_ap3002532000565690_working_mode
+        data:
+          option: "{{ demanded }}"
+      - service: logbook.log
+        continue_on_error: true
+        data:
+          name: Bluetti BLE
+          entity_id: select.office_buzzbrick_ap3002532000565690_working_mode
+          message: >
+            link back — re-asserted "{{ demanded }}" (select.apex300_working_mode is
+            {{ states('select.apex300_working_mode') }}; the Bluetti select read "{{ actual }}")
+
+  # 2) Say so when the link has been down for 10 min. -------------------------
+  #    The integration re-establishes the link by itself within 2.5–7.5 min in
+  #    what was observed; past 10 min something else is going on (phone app
+  #    holding the only BLE connection, adapter trouble, the unit's radio down with
+  #    its cloud session — bluetti-ble.md §7/§8). This only tells the owner: no
+  #    reload (bluetti_selfheal decides that, with its own grace period and
+  #    cooldown), no control write, no phone push (the self-heal's DOWN episode
+  #    pushes at 30 min if the entities stay unavailable). The card is dismissed
+  #    when the link is back. `to: "off"` only: `unavailable` is a reload or cloud
+  #    mode, not a link state, and must not raise this.
+  - id: bluetti_ble_link_down_notice
+    alias: "Bluetti BLE: notify when the link has been down for 10 min"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected
+        to: "off"
+        for: "00:10:00"
+        id: down
+      - platform: state
+        entity_id: sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected
+        to: "on"
+        id: up
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.id == 'down' }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  notification_id: bluetti_ble_link_down
+                  title: "Bluetti BLE link down for 10 min"
+                  message: >
+                    Home Assistant has had no Bluetooth connection to the Apex 300 since
+                    {{ (trigger.from_state.last_changed if trigger.from_state is not none else now()).strftime('%Y-%m-%d %H:%M:%S') }}.
+                    Every Bluetti entity is unavailable meanwhile; jupiter-lar holds
+                    PASSTHROUGH and the working mode cannot be changed until the link
+                    returns (the self-heal package reloads the integration after its
+                    grace period — bluetti_selfheal.yaml 1.3.0 — but a reload needs the
+                    Bluetti cloud). Check: is the phone app connected to the unit over
+                    Bluetooth? Does `bluetoothctl info 30:ED:A0:AC:1B:52` on vesta still
+                    see it? Runbook bluetti-ble-chain.md §3. This card clears by itself.
+              - service: logbook.log
+                continue_on_error: true
+                data:
+                  name: Bluetti BLE
+                  entity_id: sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected
+                  message: "link down for 10 min — owner notified"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.id == 'up' }}"
+            sequence:
+              - service: persistent_notification.dismiss
+                data:
+                  notification_id: bluetti_ble_link_down

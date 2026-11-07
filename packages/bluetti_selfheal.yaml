@@ -1,5 +1,32 @@
-# Bluetti / buzzbrick telemetry self-heal (cards #212, #214, #246, #259, #306, #319)
-# version: 1.2.0
+# Bluetti / buzzbrick telemetry self-heal (cards #212, #214, #246, #259, #306, #319, #360)
+# version: 1.3.0
+#   1.3.0 (2026-11-08) card #360 (the integration runs in Bluetooth Control since
+#                      2026-11-07 22:12Z — bluetti-ble.md §11 — and its BLE link drops
+#                      every few minutes; every drop made the four entities
+#                      unavailable → value, which this package read as a RELOAD, so the
+#                      push age the lar reads jumped to 500+ s while values were live,
+#                      and the episode automation would reload the entry 2 min into a
+#                      gap the integration closes by itself). Everything keys off
+#                      sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected,
+#                      which only exists in BLE mode — in cloud mode (a rollback) every
+#                      template below behaves exactly as 1.2.0. Changes:
+#                      (a) sensor.bluetti_last_push_update: `last_reload_seen` advances
+#                          only when that sensor itself comes back from
+#                          unknown/unavailable (a true reload / HA start) or when it is
+#                          absent or unavailable (cloud mode, or the entry mid-reload);
+#                          a value coming back while the link sensor is present and
+#                          readable is a BLE reconnect and is NOT a reload.
+#                      (b) the episode reload automation skips its reload while the
+#                          BLE link has been down for less than
+#                          input_number.bluetti_ble_reconnect_grace_minutes (floor and
+#                          default 10 min; observed self-reconnects took 2.5–7.5 min) —
+#                          a reload in BLE mode needs the Bluetti cloud and FAILS setup
+#                          during the daily 15:00Z cutoff (#355). After the grace it
+#                          reloads as before: a reload is the only lever that
+#                          re-establishes BLE when the integration does not.
+#                      (c) `ble_link` attribute on sensor.bluetti_report_ages.
+#                      No detector, threshold or lar contract changes. Companion
+#                      package packages/bluetti_ble.yaml re-asserts the working mode.
 #   1.2.0 (2026-10-04) card #319 (values only arrive at a reload since 2026-09-18: the
 #                      integration's websocket handler drops every cloud push — runbook
 #                      §2e). ADDITIVE, nothing existing changes behaviour. New:
@@ -59,6 +86,23 @@
 #
 #  push dead (#319)          values only change at a reload; the   bluetti_push_dead
 #                            entities may still "report"          (notify only — see there)
+#
+#  BLE MODE (#360, bluetti-ble.md §11). Since 2026-11-07 the integration polls the
+#  unit over Bluetooth every 10 s instead of waiting for a cloud push. Two things
+#  look different to the detectors above and are NOT faults of this package:
+#   * while the BLE link is down EVERY Bluetti entity is `unavailable` — "hard
+#     down" above — so bluetti_telemetry_stale is on and bluetti_integration_alive
+#     off for the length of the gap (the lar holds: the safe direction). The link
+#     comes back by itself within minutes; the reload automation now waits a
+#     grace period before it reloads (input_number.bluetti_ble_reconnect_grace_minutes).
+#   * grid-in and AC-out alternate between the true value and 0 on consecutive
+#     polls (§11.2 of that runbook). The all-zero detector is safe: it also needs
+#     SoC = 0, and 2 min continuously on, which an alternating reading never gives.
+#     Nothing else in this package consumes those two values.
+#  The one entity that stays readable through a link gap is
+#  sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected (on/off; it is
+#  `unavailable` only while the entry reloads, and absent in cloud mode). The
+#  1.3.0 changes read it and nothing else; every template stays unavailable-safe.
 #
 #  PUSH DEAD (#319, runbook §2e). In cloud mode the integration has exactly one
 #  source of live values: a websocket push from the Bluetti cloud, on which it
@@ -124,6 +168,21 @@ input_number:
     step: 5
     unit_of_measurement: min
     icon: mdi:cloud-alert
+  # #360: in BLE mode, how long the Bluetooth link may be down before the episode
+  # automation is allowed to reload the entry. min IS the default (see above).
+  # 10 min: the integration re-established the link by itself after 157 s and
+  # 450 s on 2026-11-07 (bluetti-ble.md §11.1); a reload is a cloud round-trip
+  # that fails during the daily 15:00Z cutoff, so it must not pre-empt that.
+  # Ignored in cloud mode (no link sensor) and once the link sensor itself is
+  # unavailable (the entry is mid-reload or failed to set up — then only a reload
+  # can help, and it is allowed as before).
+  bluetti_ble_reconnect_grace_minutes:
+    name: Bluetti BLE reconnect grace before a reload
+    min: 10
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:bluetooth-settings
 
 input_boolean:
   # OFF (default) = the partial-freeze detector only observes. ON = a partial
@@ -323,6 +382,12 @@ template:
               {% endif %}
             {% endfor %}
             {{ ns.n }}
+          # #360: the BLE link sensor's state as the template engine sees it —
+          # `on` / `off` in Bluetooth mode, `unavailable` while the entry reloads
+          # or failed to set up, `unknown` in cloud mode (no such entity). Lets a
+          # REST reader (the lar, a dashboard) tell "link gap" from "frozen".
+          ble_link: >
+            {{ states('sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected') }}
           # The minute these ages were computed. Changes every minute => this
           # entity's REST last_updated advances while the template engine lives.
           as_of: >
@@ -350,6 +415,24 @@ template:
   # package's, a manual one, the integration's own token-refresh reload, an HA
   # restart.
   #
+  # #360, BLE MODE: a dropped Bluetooth link ALSO takes the four entities to
+  # `unavailable` and brings them back minutes later — and that is not a reload:
+  # no placeholder is published, the first value after a reconnect is a real read.
+  # Counting it as one made the push age jump to 500+ s at every reconnect while
+  # the values were live (bluetti-ble.md §11.1). The tell-tale is the link sensor,
+  # sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected: a reload (or an
+  # HA start) takes IT to unavailable/unknown and back too; a link drop leaves it
+  # readable (`off`, then `on`). So, with that sensor as a fifth trigger:
+  #   * it is a reload when the link sensor itself comes back from
+  #     unknown/unavailable, or when one of the four comes back while the link
+  #     sensor is NOT readable (unknown = cloud mode or no integration → the 1.2.0
+  #     rule unchanged; unavailable = the entry is mid-reload and the four were
+  #     re-created a moment before the link sensor was);
+  #   * it is a BLE reconnect — `last_reload_seen` untouched — when one of the four
+  #     comes back while the link sensor reads `on` or `off`.
+  # The link sensor's own on/off changes never count as a push (it is not a
+  # telemetry value): the push test below is restricted to the four.
+  #
   # State = the time of the last push, moved at most once per 5 minutes (≤ 288
   # recorder rows a day, plus one or two per reload for the attribute; a render
   # that changes nothing writes nothing). Before the first push it holds the time
@@ -362,6 +445,9 @@ template:
           - sensor.office_buzzbrick_ap3002532000565690_grid_input_power
           - sensor.office_buzzbrick_ap3002532000565690_alternating_current_out_power
           - sensor.office_buzzbrick_ap3002532000565690_photovoltaics_input_power
+          # #360: the BLE link sensor (absent in cloud mode — a state trigger on a
+          # missing entity simply never fires, so this is harmless there).
+          - sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected
     sensor:
       - name: Bluetti Last Push Update
         unique_id: bluetti_last_push_update
@@ -369,12 +455,14 @@ template:
         icon: mdi:cloud-sync-outline
         state: >
           {% set bad = ['unknown', 'unavailable'] %}
+          {% set link = 'sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected' %}
           {% set f = trigger.from_state %}
           {% set t = trigger.to_state %}
           {% set have = this is defined and this is not none %}
           {% set prev = (as_timestamp(this.state, 0) | float(0)) if have else 0 %}
           {% set seen = (this.attributes.get('last_reload_seen', 0) | float(0)) if have else 0 %}
-          {% set push = f is not none and t is not none
+          {% set push = trigger.entity_id != link
+               and f is not none and t is not none
                and f.state not in bad and t.state not in bad and f.state != t.state
                and (as_timestamp(f.last_changed, 0) | float(0)) > seen + 30 %}
           {% if prev <= 0 or (push and (now().timestamp() - prev) >= 300) %}
@@ -383,15 +471,23 @@ template:
             {{ this.state }}
           {% endif %}
         attributes:
-          # Epoch seconds of the last time one of the four came back from
-          # unknown/unavailable — i.e. the last (re)load of the integration.
+          # Epoch seconds of the last time the integration was (re)loaded, as seen
+          # from its entities coming back from unknown/unavailable — see the #360
+          # block above for which come-backs count in BLE mode.
           last_reload_seen: >
             {% set bad = ['unknown', 'unavailable'] %}
+            {% set link = 'sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected' %}
             {% set f = trigger.from_state %}
             {% set t = trigger.to_state %}
             {% set have = this is defined and this is not none %}
             {% set seen = (this.attributes.get('last_reload_seen', 0) | int(0)) if have else 0 %}
-            {{ (now().timestamp() | int) if (t is not none and t.state not in bad and (f is none or f.state in bad)) else seen }}
+            {% set came_back = t is not none and t.state not in bad and (f is none or f.state in bad) %}
+            {# `states(link)` is read AFTER this transition: when the link sensor is
+               the trigger it already holds its new state, so a reload that ends
+               with it `on` or `off` is caught by the first disjunct. #}
+            {% set link_readable = states(link) not in bad %}
+            {% set is_reload = came_back and (trigger.entity_id == link or not link_readable) %}
+            {{ (now().timestamp() | int) if is_reload else seen }}
 
   # --- Freeze detectors -----------------------------------------------------
   - binary_sensor:
@@ -811,6 +907,37 @@ automation:
           {% set slow = start > 86400 and (now().timestamp() - start) > 3600 %}
           {% set cooldown = (60 if slow else 15) * 60 %}
           {{ ts is none or (now().timestamp() - ts) > cooldown }}
+      # #360 BLE GRACE — and the cloud dependency of a reload in BLE mode.
+      # In Bluetooth Control a dropped link makes all four entities unavailable
+      # at once: the stale detector is on from the first second (no ages), and
+      # without this condition the reload would land 2 min into a gap that the
+      # integration closes by itself (157 s and 450 s observed, bluetti-ble.md
+      # §11.1). A reload is not free in BLE mode: it re-runs setup, which needs the
+      # Bluetti cloud for the product list, the proto file and the .so checksum.
+      # With the cloud up it is a harmless re-establish; during the daily
+      # 15:00–15:06Z cutoff (#355, hours long) it FAILS setup and the entities stay
+      # missing until a later reload succeeds — strictly worse than waiting for
+      # the link. So: while the link sensor reads `off` for less than
+      # input_number.bluetti_ble_reconnect_grace_minutes, do not reload. The
+      # periodic recheck brings this automation back every 5 min, so after the
+      # grace the reload goes ahead exactly as before (cooldown permitting) — a
+      # reload IS the only lever that re-establishes BLE when the integration will
+      # not. Passes unchanged when the link sensor is absent (cloud mode), reads
+      # `on` (a stale/all-zero verdict with the link up is a real freeze), or is
+      # itself unavailable (the entry is mid-reload or failed to set up: the
+      # cloud-dependent reload is then the only thing that can help, and HA's own
+      # retry does not cover upstream #174's crash path). The reload after a
+      # failed setup is also what fetches a fresh BLE server key (§3.2 there).
+      # `last_changed` of the link sensor = when the current `off` began.
+      - condition: template
+        value_template: >
+          {% set link = states['sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected'] %}
+          {% set grace = ([states('input_number.bluetti_ble_reconnect_grace_minutes') | float(10), 10] | max) * 60 %}
+          {% if link is none or link.state != 'off' %}
+            true
+          {% else %}
+            {{ (now() - link.last_changed).total_seconds() >= grace }}
+          {% endif %}
     action:
       - service: input_datetime.set_datetime
         target:
