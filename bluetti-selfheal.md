@@ -1,7 +1,22 @@
-# Bluetti telemetry self-heal — cards #212, #214, #246, #259, #306, #319
+# Bluetti telemetry self-heal — cards #212, #214, #246, #259, #306, #319, #360
 
 Make the Bluetti / buzzbrick **cloud** integration self-recover so a transient
 DNS/network blip can't silently freeze the battery telemetry for ~44h again.
+
+**Since 2026-11-07 22:12Z the integration runs in Bluetooth Control (#358),
+and package 1.3.0 (#360) makes this package BLE-aware:** a dropped BLE link
+takes every Bluetti entity `unavailable` for minutes and brings it back, which
+1.2.0 counted as a reload (the push age the lar reads jumped to 500+ s with live
+values) and would have answered with a reload 2 min into a gap the integration
+closes by itself — a reload that needs the Bluetti cloud and fails during the
+daily 15:00Z cutoff (#355). 1.3.0 keys the reload-vs-reconnect decision and a
+reload grace period (`input_number.bluetti_ble_reconnect_grace_minutes`, 10 min)
+off `sensor.office_buzzbrick_ap3002532000565690_bluetooth_connected`; in cloud
+mode (a rollback) it behaves exactly as 1.2.0. The chain, the companion package
+`bluetti_ble.yaml` (re-asserts the working mode when the link returns) and the
+deploy are in **[bluetti-ble-chain.md](bluetti-ble-chain.md)**; the switch itself
+is `bluetti-ble.md` (#358). Everything below this paragraph describes cloud
+mode and is unchanged.
 
 **The integration itself is broken since 2026-09-18 (#319):** its websocket
 handler drops every push from the Bluetti cloud, so values only arrive when this
@@ -787,6 +802,21 @@ missing polling fallback.
   "Bluetti live updates stopped" notification within 30–35 minutes.
 
 ## 3. Apply on vesta (owner step — live-prod, not done by the agent)
+
+### Deploying 1.3.0 (#360) — with `bluetti_ble` 1.0.0
+
+Two files, deployed together: `scripts/deploy.sh --check bluetti_selfheal
+bluetti_ble` (expect git `1.3.0` / `1.0.0`, vesta `1.2.0` / `<absent>`), then
+`scripts/deploy.sh bluetti_selfheal bluetti_ble`, restart Home Assistant outside
+15:00–23:00Z (a restart reloads the Bluetti entry, which needs the cloud in BLE
+mode). The post-deploy checks and the rollback are in
+[bluetti-ble-chain.md §4–5](bluetti-ble-chain.md#4-deploy-owner-step--live-prod-not-done-by-the-agent).
+Changelog of 1.3.0: `last_reload_seen` on `sensor.bluetti_last_push_update`
+advances only at a true reload (the Bluetooth sensor itself coming back, or a
+come-back while that sensor is not readable), the episode reload waits
+`input_number.bluetti_ble_reconnect_grace_minutes` (floor 10) while the BLE
+link is down, `ble_link` attribute on `sensor.bluetti_report_ages`. No
+detector, threshold or `bluetti_integration_alive` change.
 
 ### Deploying 1.2.0 (#319)
 
