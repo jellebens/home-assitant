@@ -8,7 +8,7 @@ live.
 
 The HA instance runs on **vesta.local (192.168.50.18)**, not in k8s.
 
-Companion file: [`templates/jupiter_savings_sensor.yaml`](templates/jupiter_savings_sensor.yaml)
+Companion file: [`packages/jupiter_savings_sensor.yaml`](packages/jupiter_savings_sensor.yaml)
 (the drop-in package).
 
 ---
@@ -86,7 +86,7 @@ HA config changes are applied **by hand on vesta** — the same pattern as
 `influxdb-and-recorder.md` and `fluvius.md`. To apply this card:
 
 1. Add the read token to `secrets.yaml` (§3).
-2. Copy [`templates/jupiter_savings_sensor.yaml`](templates/jupiter_savings_sensor.yaml)
+2. Copy [`packages/jupiter_savings_sensor.yaml`](packages/jupiter_savings_sensor.yaml)
    to `vesta:/config/packages/jupiter_savings_sensor.yaml` (via the Samba share
    or the File-editor add-on), and make sure `configuration.yaml` has:
    ```yaml
@@ -162,3 +162,27 @@ Known consumers (none are inside this repo):
   package's `query:` must **not** start with `|>`. The first applied version
   did, and every 60s poll failed with a Flux 400 (`pipe destination must be a
   function call`) in the HA log while the raw sensor sat `unavailable`.
+
+## 8. 2026-11-08 — the live copy finally deployed (card #215)
+
+The query fix from §5 (no leading `|>`, `_field == "eur"`) was merged on
+2026-07-27 (PR #5) but the copy on vesta kept the original text, so HA logged
+one InfluxDB 400 (`pipe destination must be a function call`) every 60 s for
+three and a half months. Since card #299 the repo has `scripts/deploy.sh`, so
+§4 step 2 is now:
+
+```sh
+scripts/deploy.sh --check jupiter_savings_sensor   # git vs vesta version header
+scripts/deploy.sh jupiter_savings_sensor           # ssh + sudo tee, header read back
+```
+
+The file moved `templates/` → `packages/` for that (deploy.sh only ships
+`packages/*.yaml` with a `# version:` header; this one is 1.1.0). The
+`influxdb` sensor platform is legacy YAML: **"reload all YAML" does not pick it
+up — restart HA**, outside the 15:00–23:00Z Bluetti cloud-cutoff window
+(bluetti-ble.md §11). Validation after the restart: `sensor.jupiter_savings_influx_raw`
+numeric, `sensor.jupiter_battery_savings_today` ≈ Prometheus
+`jupiter_savings_today_eur{site_id="tervuren"}` (0.0554 € at 16:08Z on the day
+of the deploy; the InfluxDB point is keyed at local midnight and overwritten
+every refresh — `jupiter_reporting/realized.py`), and no more
+`influxdb.sensor Could not execute query` lines in the HA log.
