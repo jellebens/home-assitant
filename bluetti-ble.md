@@ -556,3 +556,48 @@ fix for the duplicate field; or #309 Modbus as the local source. Until one lands
 | Flapping zeros / link drops in the integration itself | open (card #360 items 1–2: proto duplicate field, scan-before-poll) | — | — |
 
 Chain runbook: [bluetti-ble-chain.md](bluetti-ble-chain.md) (lands with #37).
+
+### 11.4 The UI automation's 5-minute tick fired every second (2026-11-08, card #361)
+
+The owner's HA log export of 14:49Z (HA restarted 13:08:41Z, BLE mode) showed the
+link solid 13:09–14:10Z and then eight reconnect cycles 14:10–14:48Z, each right
+after a :x0/:x5 minute mark. The load was ours: the UI automation **Update Apex 300
+Working mode** (`/config/automations.yaml`, id `1771413777556`) had
+
+```yaml
+- trigger: time_pattern
+  minutes: /5
+  hours: '*'
+  seconds: '*'
+```
+
+`seconds: '*'` fires **every second for the whole minute** at each 5-minute mark —
+up to 60 `select.select_option` writes to the Bluetti select per 5 min (`mode:
+single` → `Already running` ×90 in 100 min). Over the cloud the extra writes were
+absorbed; over BLE every write collides with the 10 s poll: `Unexpected
+notification self.cmd: OakRead/OakWriteCmd` ×63, `TypeError: object is not
+iterable` in `_async_send_write_command`, `'bytes' object has no attribute 'get'`
+in `models.set_state_value` ×8, `Failed to update … SetCtrlWorkMode with value '':
+Invalid value` ×35, then `Polling single command timed out` → reconnect → 3×
+`encrypt link timeout` → `Polling timed out (120s)`. A lar `DISCHARGING` write at
+14:45:11Z reached the unit at 14:48:25Z. The tick had been like this since at
+least 2026-08-27 (the file's previous mtime).
+
+**Fix applied 2026-11-08 14:57Z (live hotfix, over the SSH add-on):** line 86
+`seconds: '*'` → `seconds: 0`, backup `/config/automations.yaml.bak-20261108-card361`.
+Automations must be reloaded for it to take effect (Developer tools → YAML →
+Automations; safe during a cutoff, the Bluetti integration is not touched).
+
+Why keep the tick at all: the `select.apex300_working_mode` state trigger covers
+every lar command and `packages/bluetti_ble.yaml` ≥ 1.0.0 re-asserts the mapped
+option when the link returns (§11.3), so the 5-minute tick is a belt-and-braces
+re-assert only. One write per 5 min is harmless; the next step is to move this
+mapping automation into the `bluetti_ble` package so it is git-managed and the UI
+copy can be deleted (same card).
+
+Also seen in that log, not fixed here: four UI automations share
+`id: zw095_poll_refresh` (HA ignores three — dedupe in the UI); the deployed
+`jupiter_savings_sensor.yaml` still carries the `|> |>` Flux error from card #215
+(one InfluxDB error per minute); the Bluetti select reads back `Custom` for
+~200 ms between true values (BLE read defect 3 — the §11.3 re-assert's 15 s `for`
+ignores it); `custom_components.entsoe` fails every poll (legacy, removable).
