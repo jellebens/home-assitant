@@ -1,4 +1,11 @@
 # Jupiter-sourced daily battery savings sensor (card #166)
+# version: 1.1.0
+#   1.1.0 (2026-11-08) card #215: the Flux query no longer starts with `|>` (HA prepends
+#                      `from() |> range() |>` itself — a doubled pipe was a 400 on every 60 s
+#                      poll) and filters `_field == "eur"` (jupiter's writer; "value" matched
+#                      nothing). The repo copy had the fix since 2026-07-27 (PR #5); the file
+#                      moved templates/ -> packages/ so scripts/deploy.sh can ship it.
+#   1.0.0 (2026-07-23) card #166: first version, as templates/jupiter_savings_sensor.yaml.
 # ---------------------------------------------------------------------------
 # Replaces the zeus-owned `sensor.zeus_battery_savings_today` (published to HA
 # by the zeus service over MQTT discovery) with a jupiter-fed sensor, ahead of
@@ -8,12 +15,14 @@
 #
 # This is a drop-in Home Assistant *package*. It is NOT auto-deployed: the
 # `home-assitant` repo is docs/runbooks only and does not sync to the vesta
-# host. Apply it by hand on vesta (Samba/File-editor) as:
+# host. Deploy it with `scripts/deploy.sh jupiter_savings_sensor` (ssh + sudo tee), which lands it as:
 #   /config/packages/jupiter_savings_sensor.yaml
 # and ensure configuration.yaml enables packages:
 #   homeassistant:
 #     packages: !include_dir_named packages
-# (or paste the two blocks below into configuration.yaml directly).
+# (or paste the two blocks below into configuration.yaml directly). The `influxdb`
+# sensor platform is legacy YAML and is NOT covered by "reload all YAML": a change
+# to this file needs an HA RESTART (outside the 15:00–23:00Z Bluetti cutoff window).
 #
 # PRE-REQ (owner step, live-prod — see runbook §2): mint an InfluxDB token that
 # can READ the `zeus` bucket and add it to secrets.yaml as

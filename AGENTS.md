@@ -32,7 +32,7 @@ side. The header is how you tell which behavior is actually live:
 - Jupiter-sourced battery-savings sensor (replaces the zeus MQTT-discovery
   `sensor.zeus_battery_savings_today` ahead of the zeus decommission #169):
   - [jupiter-savings-sensor.md](jupiter-savings-sensor.md) — runbook
-  - [templates/jupiter_savings_sensor.yaml](templates/jupiter_savings_sensor.yaml) — drop-in package
+  - [packages/jupiter_savings_sensor.yaml](packages/jupiter_savings_sensor.yaml) — drop-in package
 - Bluetti telemetry self-heal (auto-reloads the Bluetti cloud integration when
   its battery telemetry freezes stale-but-present, so a transient blip can't
   wedge it for hours — #212; all-zero #214; `bluetti_integration_alive` for the
